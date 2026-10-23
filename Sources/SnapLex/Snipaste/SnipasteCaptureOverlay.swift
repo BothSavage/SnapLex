@@ -281,6 +281,11 @@ public final class SnipasteOverlayWindow: NSPanel {
 
     override public var canBecomeKey: Bool { true }
     override public var canBecomeMain: Bool { true }
+
+    /// Prevent macOS AppKit from pushing the full-screen overlay window downward by the menu bar / notch height (-39pt)!
+    override public func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        return frameRect
+    }
 }
 
 // MARK: - 120Hz GPU-Accelerated Snipaste Canvas View
@@ -517,13 +522,13 @@ public final class SnipasteCaptureCanvasView: NSView {
             return
         }
         hosting.isHidden = false
+        hosting.invalidateIntrinsicContentSize()
+        hosting.layoutSubtreeIfNeeded()
         let fit = hosting.fittingSize
         hosting.frame.size = fit
 
-        // When in Full-Screen Recording mode (or when selection covers the full screen),
-        // place the entire toolbar + sub-toolbar right in the CENTER of the screen for easy access!
-        if (isRecordingSubbarExpanded && ScreenRecorderManager.shared.targetMode == .fullScreen)
-            || (selectionRect.width >= bounds.width - 24 && selectionRect.height >= bounds.height - 24) {
+        // When in Full-Screen Recording mode, place the entire menu in the center of the screen
+        if isRecordingSubbarExpanded && ScreenRecorderManager.shared.targetMode == .fullScreen {
             let cx = round((bounds.width - fit.width) / 2)
             let cy = round((bounds.height - fit.height) / 2)
             hosting.frame.origin = CGPoint(x: cx, y: cy)
@@ -531,37 +536,38 @@ public final class SnipasteCaptureCanvasView: NSView {
         }
 
         // Top 30pt of SnipasteToolbarSwiftUIView is transparent headroom for hover tooltips.
-        // Account for it so the visible toolbar sits cleanly outside selectionRect!
         let tooltipHeadroom: CGFloat = 30
         let visibleHeight = max(36, fit.height - tooltipHeadroom)
-        let gap: CGFloat = 12
+        let gap: CGFloat = 10
 
-        // Horizontally center toolbar relative to selectionRect
+        // Safe vertical bounds inside the screen (above bottom edge and below top Menu Bar / Notch)
+        let minSafeY: CGFloat = 18
+        let maxSafeY: CGFloat = max(minSafeY + fit.height, bounds.height - 42)
+
+        // Always horizontally center the toolbar relative to selectionRect, clamped on-screen
         var x = round(selectionRect.midX - fit.width / 2)
-        x = max(12, min(x, bounds.width - fit.width - 12))
+        x = max(16, min(x, bounds.width - fit.width - 16))
 
         let belowY = round(selectionRect.minY - visibleHeight - gap)
         let aboveY = round(selectionRect.maxY + gap)
 
         var y: CGFloat
-        if belowY >= 8 {
-            // 1. Preferred: Centered strictly BELOW the selection/recording region
+        if belowY >= minSafeY {
+            // 1. Enough room on screen BELOW selectionRect -> place outside below
             y = belowY
-        } else if aboveY + visibleHeight <= bounds.height - 8 {
-            // 2. Fallback: Centered strictly ABOVE the selection/recording region
+        } else if aboveY + fit.height <= maxSafeY {
+            // 2. Enough room on screen ABOVE selectionRect (below menu bar) -> place outside above
             y = aboveY
-        } else if selectionRect.maxX + fit.width + gap <= bounds.width - 8 {
-            // 3. Fallback: Strictly to the RIGHT of the selection/recording region
-            x = round(selectionRect.maxX + gap)
-            y = round(max(8, min(selectionRect.midY - visibleHeight / 2, bounds.height - fit.height - 8)))
-        } else if selectionRect.minX - fit.width - gap >= 8 {
-            // 4. Fallback: Strictly to the LEFT of the selection/recording region
-            x = round(selectionRect.minX - fit.width - gap)
-            y = round(max(8, min(selectionRect.midY - visibleHeight / 2, bounds.height - fit.height - 8)))
         } else {
-            // 5. Tall selection spanning full screen height: dock cleanly at bottom-center
-            y = 12
+            // 3. Selected window/region spans nearly the full screen height (e.g. from Dock to Menu Bar),
+            // leaving no room outside top or bottom -> place cleanly inside the bottom-center of the window
+            // so the toolbar and window selector are 100% visible on-screen!
+            y = round(max(minSafeY + 10, selectionRect.minY + 18))
         }
+
+        // Final strict on-screen clamp so the toolbar or window selector can NEVER go off-screen
+        x = max(16, min(x, bounds.width - fit.width - 16))
+        y = max(minSafeY, min(y, maxSafeY - fit.height))
         hosting.frame.origin = CGPoint(x: x, y: y)
     }
 
@@ -2122,8 +2128,9 @@ public struct SnipasteToolbarSwiftUIView: View {
                                     }
                                 }
                             }
-                            .frame(maxWidth: 460)
+                            .frame(width: min(460, CGFloat(detectedWindows.prefix(10).count) * 145), height: 28)
                         }
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(
