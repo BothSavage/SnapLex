@@ -27,17 +27,17 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     }
 
     private func setupSnipasteCallbacks() {
-        // When user clicks "💬 截图翻译" on the Snipaste Pro Capture Toolbar
+        // When user clicks "翻译" on the Snipaste Capture Toolbar
         SnipasteCaptureManager.shared.onOCRTranslateImage = { [weak self] image, screenRect in
             guard let self = self else { return }
             self.lastAnchorPoint = CGPoint(x: screenRect.midX, y: screenRect.minY)
             Task { @MainActor in
                 let text = await VisionOCRService.shared.recognizeText(in: image)
-                let finalText = text.isEmpty ? "（未在截图中识别到文字，可点击「贴图 F3」将此区域钉在屏幕上）" : text
+                let finalText = text.isEmpty ? "（未在截图中识别到文字）" : text
                 TranslatorViewModel.shared.startTranslation(
                     text: finalText,
                     mode: .translate,
-                    sourceApp: "Snipaste 截图翻译",
+                    sourceApp: "截图翻译",
                     trigger: .screenshot,
                     image: image
                 )
@@ -45,7 +45,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             }
         }
 
-        // When user clicks "🔍 提字" on the Snipaste Pro Capture Toolbar
+        // When user clicks "OCR" on the Snipaste Capture Toolbar
         SnipasteCaptureManager.shared.onOCRExtractText = { [weak self] image, screenRect in
             guard let self = self else { return }
             self.lastAnchorPoint = CGPoint(x: screenRect.midX, y: screenRect.minY)
@@ -56,7 +56,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
                     NSPasteboard.general.setString(text, forType: .string)
                     TranslatorViewModel.shared.preparePillSelection(
                         text: text,
-                        sourceApp: "Snipaste OCR 提字",
+                        sourceApp: "OCR 提字",
                         trigger: .screenshot
                     )
                     self.showPillBar(nearMouse: false)
@@ -65,13 +65,16 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    // MARK: - Stage 1: Show Pill Bar (Image 1)
+    // MARK: - Stage 1: Show Pill Bar
 
     public func showPillBar(nearMouse: Bool = true) {
         if pillPanel == nil {
             createPillPanel()
         }
         guard let pill = pillPanel else { return }
+        if let hosting = pill.contentView {
+            pill.setContentSize(hosting.fittingSize)
+        }
 
         // Hide card if not pinned
         if !TranslatorViewModel.shared.isPinned {
@@ -87,7 +90,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             let pSize = pill.frame.size
 
             var x = mouse.x - pSize.width / 2
-            var y = mouse.y - pSize.height - 6 // Pop up right below cursor so it never collides with Zhihu/web top tooltips
+            var y = mouse.y - pSize.height - 6
             if y < visible.minY + 12 {
                 y = mouse.y + 16
             }
@@ -103,7 +106,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         pillPanel?.orderOut(nil)
     }
 
-    // MARK: - Stage 2: Show Translation Card (Image 2)
+    // MARK: - Stage 2: Show Translation Card
 
     public func showTranslationCard(atSavedAnchor: Bool = false, nearMouse: Bool = true) {
         hidePillBar()
@@ -111,6 +114,9 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             createCardPanel()
         }
         guard let card = cardPanel else { return }
+        if let hosting = card.contentView {
+            card.setContentSize(hosting.fittingSize)
+        }
 
         let anchor = atSavedAnchor && lastAnchorPoint != .zero ? lastAnchorPoint : NSEvent.mouseLocation
         if nearMouse && !card.isVisible {
@@ -153,7 +159,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     private func createPillPanel() {
         let panel = BorderlessKeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 490, height: 76),
+            contentRect: NSRect(x: 0, y: 0, width: 280, height: 64),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -198,7 +204,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     private func createCardPanel() {
         let panel = BorderlessKeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 476, height: 390),
+            contentRect: NSRect(x: 0, y: 0, width: 442, height: 280),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -249,11 +255,9 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     }
 
     public func triggerPinFlow() {
-        // If Snipaste Capture Overlay is currently open, F3 pins the selected region!
         if SnipasteCaptureManager.shared.pinActiveSelectionIfCapturing() {
             return
         }
-        // Otherwise F3 pins the current clipboard content (Image / Text / HEX Color) onto the screen!
         SnipastePinManager.shared.pinFromClipboard()
     }
 
@@ -265,7 +269,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
                 backing: .buffered,
                 defer: false
             )
-            win.title = "SnapLex 语境生词本 (SQLite + Markdown 双写)"
+            win.title = "SnapLex 生词本"
             win.center()
             win.contentView = NSHostingView(rootView: VocabularyBookView())
             win.isReleasedWhenClosed = false
@@ -279,12 +283,17 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     public func showSettingsWindow() {
         if settingsWindow == nil {
             let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
-                styleMask: [.titled, .closable],
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 490),
+                styleMask: [.titled, .closable, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
             win.title = "SnapLex 偏好设置"
+            win.titleVisibility = .hidden
+            win.titlebarAppearsTransparent = true
+            win.isMovableByWindowBackground = true
+            win.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1.0)
+            win.appearance = NSAppearance(named: .darkAqua)
             win.center()
             win.contentView = NSHostingView(rootView: SettingsView())
             win.isReleasedWhenClosed = false
