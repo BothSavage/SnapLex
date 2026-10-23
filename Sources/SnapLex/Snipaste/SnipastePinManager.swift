@@ -81,10 +81,23 @@ public struct InstantBlackIconButton: View {
         }
     }
 
-    /// `glyph:X` renders the literal text X (e.g. the "A" text tool, "B" bold, "I" italic); otherwise an SF Symbol.
+    /// Supports `"wechat:text"` (`[T]`), `"wechat:translate"` (`[文][A]`), `"wechat:ocr"` (`⌜A⌟`),
+    /// `"glyph:X"` (`B` / `I`), and standard SF Symbols.
     @ViewBuilder
     private var iconContent: some View {
-        if icon.hasPrefix("glyph:") {
+        if icon == "wechat:text" {
+            ZStack {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(lineWidth: 1.35)
+                    .frame(width: 15, height: 15)
+                Text("T")
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+            }
+        } else if icon == "wechat:translate" {
+            WeChatTranslateIconView()
+        } else if icon == "wechat:ocr" {
+            WeChatOCRIconView()
+        } else if icon.hasPrefix("glyph:") {
             let glyph = String(icon.dropFirst(6))
             switch glyph {
             case "B":
@@ -98,6 +111,100 @@ public struct InstantBlackIconButton: View {
             Image(systemName: icon)
                 .font(.system(size: 13.5, weight: .medium))
         }
+    }
+}
+
+/// WeChat-style Translate Icon: overlapping `[文]` (bottom-left) and `[A]` (top-right) with corner arcs
+private struct WeChatTranslateIconView: View {
+    var body: some View {
+        ZStack {
+            // Subtle top-left & bottom-right connector arcs
+            Canvas { context, size in
+                var arcPath = Path()
+                // Top-left corner bracket arc
+                arcPath.move(to: CGPoint(x: 2.2, y: 6.2))
+                arcPath.addQuadCurve(to: CGPoint(x: 6.2, y: 2.2), control: CGPoint(x: 2.4, y: 2.4))
+                // Bottom-right corner bracket arc
+                arcPath.move(to: CGPoint(x: size.width - 2.2, y: size.height - 6.2))
+                arcPath.addQuadCurve(
+                    to: CGPoint(x: size.width - 6.2, y: size.height - 2.2),
+                    control: CGPoint(x: size.width - 2.4, y: size.height - 2.4)
+                )
+                context.stroke(arcPath, with: .foreground, style: StrokeStyle(lineWidth: 1.15, lineCap: .round))
+            }
+            .frame(width: 17, height: 17)
+
+            // Top-right [A] box
+            ZStack {
+                RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                    .fill(Color(white: 0.12))
+                RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                    .strokeBorder(lineWidth: 1.2)
+                Text("A")
+                    .font(.system(size: 6.8, weight: .bold, design: .rounded))
+            }
+            .frame(width: 9.8, height: 9.8)
+            .offset(x: 3.1, y: -3.1)
+
+            // Bottom-left [文] box (overlapping in front)
+            ZStack {
+                RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                    .fill(Color(white: 0.12))
+                RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                    .strokeBorder(lineWidth: 1.2)
+                Text("文")
+                    .font(.system(size: 6.6, weight: .bold))
+            }
+            .frame(width: 10.2, height: 10.2)
+            .offset(x: -3.0, y: 3.0)
+        }
+        .frame(width: 17, height: 17)
+    }
+}
+
+/// WeChat-style OCR Icon: 4 corner scanner brackets `⌜ ⌝ ⌞ ⌟` with `A` in the center
+private struct WeChatOCRIconView: View {
+    var body: some View {
+        ZStack {
+            Canvas { context, size in
+                let w = size.width
+                let h = size.height
+                let m: CGFloat = 1.2
+                let arm: CGFloat = 4.2
+                var path = Path()
+
+                // Top-left bracket
+                path.move(to: CGPoint(x: m, y: m + arm))
+                path.addLine(to: CGPoint(x: m, y: m))
+                path.addLine(to: CGPoint(x: m + arm, y: m))
+
+                // Top-right bracket
+                path.move(to: CGPoint(x: w - m - arm, y: m))
+                path.addLine(to: CGPoint(x: w - m, y: m))
+                path.addLine(to: CGPoint(x: w - m, y: m + arm))
+
+                // Bottom-left bracket
+                path.move(to: CGPoint(x: m, y: h - m - arm))
+                path.addLine(to: CGPoint(x: m, y: h - m))
+                path.addLine(to: CGPoint(x: m + arm, y: h - m))
+
+                // Bottom-right bracket
+                path.move(to: CGPoint(x: w - m - arm, y: h - m))
+                path.addLine(to: CGPoint(x: w - m, y: h - m))
+                path.addLine(to: CGPoint(x: w - m, y: h - m - arm))
+
+                context.stroke(
+                    path,
+                    with: .foreground,
+                    style: StrokeStyle(lineWidth: 1.35, lineCap: .round, lineJoin: .round)
+                )
+            }
+            .frame(width: 16, height: 16)
+
+            Text("A")
+                .font(.system(size: 9.8, weight: .bold, design: .rounded))
+        }
+        .frame(width: 16, height: 16)
     }
 }
 
@@ -1211,16 +1318,16 @@ private struct PinOuterToolbarSwiftUIView: View {
                 )
 
                 InstantBlackIconButton(
-                    icon: "character.textbox",
+                    icon: "wechat:translate",
                     isHighlightedGreen: vm.isInPlaceTranslated,
-                    tooltip: "原位贴合翻译 (T)",
+                    tooltip: "翻译",
                     action: onToggleInPlaceTranslation
                 )
 
                 InstantBlackIconButton(
-                    icon: "doc.text.viewfinder",
+                    icon: "wechat:ocr",
                     isHighlightedGreen: vm.showOCRSidebar,
-                    tooltip: "右侧提取文字",
+                    tooltip: "提取文字",
                     action: onToggleOCRSidebar
                 )
 

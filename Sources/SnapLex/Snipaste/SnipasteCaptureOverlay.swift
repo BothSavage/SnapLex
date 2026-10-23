@@ -1931,29 +1931,29 @@ public struct SnipasteToolbarSwiftUIView: View {
                 // Scrolling Long Capture (微信级滑动长截图)
                 InstantBlackIconButton(
                     icon: "arrow.up.and.down.text.horizontal",
-                    tooltip: "滑动长截图",
+                    tooltip: "长截图",
                     action: onScrollingCapture
                 )
 
-                // Screen Recorder Sub-Toolbar Toggle (默认区域录屏)
+                // Screen Recorder Sub-Toolbar Toggle
                 InstantBlackIconButton(
                     icon: "video",
                     isSelected: isRecordingSubbarExpanded,
-                    tooltip: "区域录屏",
+                    tooltip: "录屏",
                     action: onToggleRecordSubbar
                 )
 
-                // Image 2: In-Place Image Translation ([文A])
+                // WeChat-style In-Place Image Translation ([文A])
                 InstantBlackIconButton(
-                    icon: "character.textbox",
-                    tooltip: "原位贴合翻译",
+                    icon: "wechat:translate",
+                    tooltip: "翻译",
                     action: onOCRTranslate
                 )
 
-                // Image 1: Right-Side OCR Text Extraction ([文])
+                // WeChat-style OCR Text Extraction (⌜A⌟)
                 InstantBlackIconButton(
-                    icon: "doc.text.viewfinder",
-                    tooltip: "提取图中文字",
+                    icon: "wechat:ocr",
+                    tooltip: "提取文字",
                     action: onOCRExtract
                 )
 

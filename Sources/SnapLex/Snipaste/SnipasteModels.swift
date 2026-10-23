@@ -28,8 +28,8 @@ public enum SnipAnnotationTool: String, CaseIterable, Identifiable {
         case .mosaic: return "checkerboard.rectangle"
         case .blur: return "drop.halffull"
         case .counter: return "1.circle.fill"
-        // Rendered as a plain "A" glyph by `InstantBlackIconButton` (see `glyph:` prefix)
-        case .text: return "glyph:A"
+        // WeChat-style boxed [T] icon for text annotation
+        case .text: return "wechat:text"
         }
     }
 }
