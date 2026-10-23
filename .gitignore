@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Swift Package Manager & Xcode
+.build/
+.swiftpm/
+Packages/
+xcuserdata/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+
+# Packaged App Bundle & Release Artifacts
+dist/
+*.app
+*.dmg
+*.zip
+
+# Local Environment, Secrets & User Data
+.env
+.env.*
+*.pem
+*.key
+*.sqlite
+*.sqlite3
+*.db
