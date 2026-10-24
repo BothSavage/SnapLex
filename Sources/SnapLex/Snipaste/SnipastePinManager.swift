@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import SwiftUI
+import Translation
 
 public struct PinHistoryRecord: Identifiable {
     public let id = UUID()
@@ -20,6 +21,7 @@ public struct InstantBlackIconButton: View {
     public let action: () -> Void
 
     @State private var isHovered: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(
         icon: String,
@@ -40,16 +42,14 @@ public struct InstantBlackIconButton: View {
     public var body: some View {
         Button(action: action) {
             iconContent
-                .foregroundStyle(
-                    Color.white.opacity(isDisabled ? 0.28 : (isSelected ? 1.0 : 0.88))
-                )
+                .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(isDisabled ? 0.28 : (isSelected ? 1.0 : 0.88)))
                 .frame(width: 30, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(
                             isSelected
-                                ? Color.white.opacity(0.24)
-                                : (isHovered && !isDisabled ? Color.white.opacity(0.14) : Color.clear)
+                                ? SnapLexTheme.toolbarSelection(for: colorScheme)
+                                : (isHovered && !isDisabled ? SnapLexTheme.toolbarHover(for: colorScheme) : Color.clear)
                         )
                 )
         }
@@ -60,18 +60,18 @@ public struct InstantBlackIconButton: View {
         }
         .overlay(alignment: .top) {
             if isHovered && !tooltip.isEmpty {
-                Text(tooltip)
+                Text(L10n.string(tooltip))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SnapLexTheme.tooltipForeground(for: colorScheme))
                     .fixedSize()
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3.5)
                     .background(
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color(white: 0.08, opacity: 0.96))
+                            .fill(SnapLexTheme.tooltipBackground(for: colorScheme).opacity(0.97))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.8)
+                                .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
                             )
                     )
                     .offset(y: -28)
@@ -215,6 +215,7 @@ public struct InstantBlackTextPillButton: View {
     public let action: () -> Void
 
     @State private var isHovered: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(
         label: String,
@@ -232,14 +233,14 @@ public struct InstantBlackTextPillButton: View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.62))
+                .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(isSelected ? 1 : 0.66))
                 .frame(width: 30, height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(
                             isSelected
-                                ? Color.white.opacity(0.24)
-                                : (isHovered ? Color.white.opacity(0.14) : Color.clear)
+                                ? SnapLexTheme.toolbarSelection(for: colorScheme)
+                                : (isHovered ? SnapLexTheme.toolbarHover(for: colorScheme) : Color.clear)
                         )
                 )
         }
@@ -249,18 +250,18 @@ public struct InstantBlackTextPillButton: View {
         }
         .overlay(alignment: .top) {
             if isHovered && !tooltip.isEmpty {
-                Text(tooltip)
+                Text(L10n.string(tooltip))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SnapLexTheme.tooltipForeground(for: colorScheme))
                     .fixedSize()
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3.5)
                     .background(
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color(white: 0.08, opacity: 0.96))
+                            .fill(SnapLexTheme.tooltipBackground(for: colorScheme).opacity(0.97))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.8)
+                                .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
                             )
                     )
                     .offset(y: -28)
@@ -276,6 +277,7 @@ public struct InstantBlackStartRecordButton: View {
     public let action: () -> Void
 
     @State private var isHovered: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(tooltip: String, action: @escaping () -> Void) {
         self.tooltip = tooltip
@@ -288,16 +290,16 @@ public struct InstantBlackStartRecordButton: View {
                 Circle()
                     .fill(Color.red)
                     .frame(width: 8, height: 8)
-                Text("开始录制")
+                Text(L10n.string("开始录制"))
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                     .fixedSize()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovered ? Color.white.opacity(0.26) : Color.white.opacity(0.18))
+                    .fill(isHovered ? SnapLexTheme.toolbarHover(for: colorScheme) : SnapLexTheme.toolbarBorder(for: colorScheme))
             )
         }
         .buttonStyle(.plain)
@@ -306,18 +308,18 @@ public struct InstantBlackStartRecordButton: View {
         }
         .overlay(alignment: .top) {
             if isHovered && !tooltip.isEmpty {
-                Text(tooltip)
+                Text(L10n.string(tooltip))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SnapLexTheme.tooltipForeground(for: colorScheme))
                     .fixedSize()
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3.5)
                     .background(
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color(white: 0.08, opacity: 0.96))
+                            .fill(SnapLexTheme.tooltipBackground(for: colorScheme).opacity(0.97))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.8)
+                                .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
                             )
                     )
                     .offset(y: -28)
@@ -337,6 +339,10 @@ public final class SnipastePinManager: ObservableObject {
     @Published public var allPinsHidden: Bool = false
 
     private init() {}
+
+    public func applyAppearance(_ appearance: NSAppearance?) {
+        activePins.forEach { $0.applyAppearance(appearance) }
+    }
 
     /// Pins a borderless NSImage with shadow ON by default and an outer floating hover toolbar!
     @discardableResult
@@ -517,8 +523,8 @@ public final class SnipastePinManager: ObservableObject {
 
 @MainActor
 public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
-    public let originalImage: NSImage
-    private let baseAspectSize: NSSize
+    public private(set) var originalImage: NSImage
+    private var baseAspectSize: NSSize
     private let sidebarWidth: CGFloat = 290
 
     fileprivate let viewModel: PinnedWindowViewModel
@@ -529,6 +535,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
     /// Companion floating badge window so Mouse Click-Through mode can ALWAYS be cancelled with 1 click!
     private var unlockClickThroughPanel: NSPanel?
     private var hideToolbarTask: Task<Void, Never>?
+    private var imageEffectTask: Task<Void, Never>?
     private var isApplyingZoom: Bool = false
 
     public init(image: NSImage, initialRect: NSRect) {
@@ -547,6 +554,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         self.level = .floating
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.backgroundColor = .clear
+        self.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         self.isOpaque = false
         // Default: Shadow ON (`hasShadow = true`), borderless pure image!
         self.hasShadow = true
@@ -588,6 +596,12 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
     override public var canBecomeKey: Bool { true }
     override public var canBecomeMain: Bool { true }
 
+    fileprivate func applyAppearance(_ appearance: NSAppearance?) {
+        self.appearance = appearance
+        outerToolbarPanel?.appearance = appearance
+        unlockClickThroughPanel?.appearance = appearance
+    }
+
     public func windowDidMove(_ notification: Notification) {
         syncCompanionWindows()
     }
@@ -608,6 +622,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         panel.level = .popUpMenu
         panel.isFloatingPanel = true
         panel.backgroundColor = .clear
+        panel.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         panel.isOpaque = false
         panel.hasShadow = false
         panel.isReleasedWhenClosed = false
@@ -627,6 +642,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
             onZoomOut: { [weak self] in self?.stepZoom(by: -0.15) },
             onResetActualSize: { [weak self] in self?.resetToActualSize() },
             onRotate90: { [weak self] in self?.rotate90Clockwise() },
+            onApplyImageEffect: { [weak self] effect in self?.applyImageEffect(effect) },
             onToggleAnnotationMode: { [weak self] in self?.toggleAnnotationMode() },
             onToggleInPlaceTranslation: { [weak self] in self?.toggleInPlaceTranslation() },
             onToggleOCRSidebar: { [weak self] in self?.toggleOCRSidebar() },
@@ -694,20 +710,32 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
             return
         }
 
-        let screen = NSScreen.screens.first(where: { NSIntersectsRect($0.frame, frame) }) ?? NSScreen.main
+        let anchorFrame = toolbarAnchorFrame
+        let screen = NSScreen.screens.first(where: { NSIntersectsRect($0.frame, anchorFrame) }) ?? NSScreen.main
         let vFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 
-        var x = frame.midX - barW / 2
+        var x = anchorFrame.midX - barW / 2
         x = max(vFrame.minX + 8, min(x, vFrame.maxX - barW - 8))
 
-        // Place OUTSIDE below the pinned image by default; if near bottom of screen, place OUTSIDE above the pinned image!
-        var y = frame.minY - barH - 4
+        // Align the toolbar to the primary pinned image area, excluding the optional OCR side drawer.
+        // Place it below the image by default and above it when there is not enough room below.
+        var y = anchorFrame.minY - barH - 4
         if y < vFrame.minY + 8 {
-            y = frame.maxY + 4
+            y = anchorFrame.maxY + 4
         }
 
         panel.setFrame(NSRect(x: x, y: y, width: barW, height: barH), display: true)
         panel.orderFrontRegardless()
+    }
+
+    private var toolbarAnchorFrame: NSRect {
+        let drawerWidth = viewModel.showOCRSidebar ? sidebarWidth : 0
+        return NSRect(
+            x: frame.minX,
+            y: frame.minY,
+            width: max(80, frame.width - drawerWidth),
+            height: frame.height
+        )
     }
 
     private func hideOuterToolbar() {
@@ -723,8 +751,8 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         if !viewModel.isAnnotating {
             viewModel.activeTool = .selectMove
             viewModel.commitInlineTextIfNeeded()
-        } else if viewModel.activeTool == .selectMove {
-            viewModel.activeTool = .rectangle
+        } else {
+            viewModel.activeTool = .selectMove
         }
         self.isMovableByWindowBackground = !viewModel.isAnnotating
         DispatchQueue.main.async {
@@ -736,7 +764,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         viewModel.hasWindowShadow.toggle()
         self.hasShadow = viewModel.hasWindowShadow
         self.invalidateShadow()
-        viewModel.showHUD(viewModel.hasWindowShadow ? "已开启窗口阴影" : "已取消窗口阴影")
+        viewModel.showHUD(L10n.string(viewModel.hasWindowShadow ? "已开启窗口阴影" : "已取消窗口阴影"))
     }
 
     public func cleanupCompanionWindows() {
@@ -786,7 +814,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         if viewModel.isInPlaceTranslated {
             viewModel.isInPlaceTranslated = false
             viewModel.rebuildDisplayedImage()
-            viewModel.showHUD("已还原原图")
+            viewModel.showHUD(L10n.string("已还原原图"))
             return
         }
 
@@ -797,26 +825,118 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                 viewModel.ocrSidebarText = cached.fullOriginalText
             }
             viewModel.rebuildDisplayedImage()
-            viewModel.showHUD("已原位贴合翻译")
+            viewModel.showHUD(L10n.string("已原位贴合翻译"))
             return
         }
 
         viewModel.isTranslatingInPlace = true
-        viewModel.showHUD("正在原位识别并贴合翻译...")
+        viewModel.showHUD(L10n.string("正在原位识别并贴合翻译..."))
         let srcImg = viewModel.displayedImage
         Task { @MainActor in
-            let res = await InPlaceOCRService.shared.recognizeAndTranslateInPlace(image: srcImg)
-            self.viewModel.cachedInPlaceResult = res
-            self.viewModel.ocrBlocks = res.blocks
-            if self.viewModel.ocrSidebarText.isEmpty {
-                self.viewModel.ocrSidebarText = res.fullOriginalText.isEmpty
-                    ? "（未在图中识别到文本）"
-                    : res.fullOriginalText
+            let blocks = await InPlaceOCRService.shared.recognizeBlocks(in: srcImg)
+            guard !blocks.isEmpty else {
+                self.viewModel.isTranslatingInPlace = false
+                self.viewModel.isInPlaceTranslated = false
+                self.viewModel.showHUD(L10n.string("未识别到文本"))
+                return
             }
-            self.viewModel.isTranslatingInPlace = false
-            self.viewModel.rebuildDisplayedImage()
-            self.viewModel.showHUD(res.blocks.isEmpty ? "未识别到文本" : "✓ 原位翻译完成")
+
+            self.viewModel.pendingTranslationBlocks = blocks
+            self.viewModel.pendingTranslationImage = srcImg
+            self.viewModel.pendingTranslationID = UUID()
+            if self.viewModel.ocrSidebarText.isEmpty {
+                self.viewModel.ocrSidebarText = blocks.map(\.originalText).joined(separator: "\n")
+            }
+            let text = blocks.map(\.originalText).joined(separator: "\n")
+            let targetCode = NativeTranslationSupport.preferredTargetCode(for: text)
+            let sourceCodes = NativeTranslationSupport.distinctSourceLanguageCodes(
+                in: blocks.map(\.originalText),
+                excluding: targetCode
+            )
+            self.viewModel.pendingTranslationSourceCodes = Array(sourceCodes.dropFirst())
+            self.viewModel.pendingTranslationTargetCode = targetCode
+            guard let sourceCode = sourceCodes.first else {
+                self.viewModel.isTranslatingInPlace = false
+                self.viewModel.isInPlaceTranslated = false
+                self.viewModel.showHUD(L10n.string("识别到的文字已是目标语言"))
+                return
+            }
+            self.viewModel.pendingTranslationSourceCode = sourceCode
+
+            if AppSettings.shared.translationEngine == .google {
+                self.viewModel.translationConfiguration = nil
+                let requestID = self.viewModel.pendingTranslationID
+                let targetLabel = AppSettings.targetLanguages.first(where: { $0.code == targetCode })?.label ?? "简体中文"
+                Task { @MainActor in
+                    do {
+                        let indicesToTranslate = blocks.indices.filter {
+                            NativeTranslationSupport.sourceLanguageCode(for: blocks[$0].originalText) != targetCode
+                        }
+                        let translated = try await GoogleTranslationService.shared.translate(
+                            texts: indicesToTranslate.map { blocks[$0].originalText },
+                            targetLanguage: targetLabel
+                        )
+                        guard self.viewModel.pendingTranslationID == requestID else { return }
+                        var translatedBlocks = blocks
+                        for (translationIndex, blockIndex) in indicesToTranslate.enumerated() {
+                            translatedBlocks[blockIndex].translatedText = translated.indices.contains(translationIndex)
+                                ? translated[translationIndex]
+                                : translatedBlocks[blockIndex].originalText
+                        }
+                        self.completeInPlaceTranslation(
+                            translatedBlocks,
+                            sourceImage: srcImg,
+                            requestID: requestID
+                        )
+                    } catch {
+                        guard self.viewModel.pendingTranslationID == requestID else { return }
+                        self.viewModel.isTranslatingInPlace = false
+                        self.viewModel.isInPlaceTranslated = false
+                        self.viewModel.showHUD(
+                            (error as? GoogleTranslationError)?.errorDescription
+                                ?? L10n.string("Google 翻译暂时无法连接，请检查网络后重试。")
+                        )
+                    }
+                }
+                return
+            }
+
+            let source = Locale.Language(identifier: sourceCode)
+            let target = Locale.Language(identifier: targetCode)
+            if var configuration = self.viewModel.translationConfiguration,
+               configuration.source == source,
+               configuration.target == target {
+                configuration.invalidate()
+                self.viewModel.translationConfiguration = configuration
+            } else {
+                self.viewModel.translationConfiguration = NativeTranslationSupport.makeConfiguration(
+                    source: sourceCode,
+                    target: targetCode
+                )
+            }
         }
+    }
+
+    private func completeInPlaceTranslation(
+        _ blocks: [OCRTextBlock],
+        sourceImage: NSImage,
+        requestID: UUID?
+    ) {
+        guard viewModel.pendingTranslationID == requestID else { return }
+        let originalText = blocks.map(\.originalText).joined(separator: "\n")
+        let translatedText = blocks.map(\.translatedText).joined(separator: "\n")
+        viewModel.recordCompletedScreenshotTranslation(blocks: blocks)
+        let renderedImage = InPlaceOCRService.renderTranslatedBlocksOnImage(baseImage: sourceImage, blocks: blocks)
+        viewModel.cachedInPlaceResult = InPlaceOCRResult(
+            blocks: blocks,
+            fullOriginalText: originalText,
+            fullTranslatedText: translatedText,
+            renderedTranslatedImage: renderedImage
+        )
+        viewModel.ocrBlocks = blocks
+        viewModel.isTranslatingInPlace = false
+        viewModel.rebuildDisplayedImage()
+        viewModel.showHUD(L10n.string("✓ 原位翻译完成"))
     }
 
     // MARK: - Image 1 Mode: Right-Side OCR Text Drawer (`[文]`)
@@ -838,6 +958,10 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         }
         setFrame(f, display: true, animate: true)
         syncCompanionWindows()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { [weak self] in
+            guard let self, self.outerToolbarPanel?.isVisible == true else { return }
+            self.showAndPositionOuterToolbar(forceReposition: true)
+        }
 
         if viewModel.showOCRSidebar && viewModel.ocrSidebarText.isEmpty {
             viewModel.isExtractingOCR = true
@@ -846,7 +970,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                 let blocks = await InPlaceOCRService.shared.recognizeBlocks(in: srcImg)
                 self.viewModel.ocrBlocks = blocks
                 let fullText = blocks.map(\.originalText).joined(separator: "\n")
-                self.viewModel.ocrSidebarText = fullText.isEmpty ? "（未在图中识别到文本）" : fullText
+                self.viewModel.ocrSidebarText = fullText.isEmpty ? L10n.string("（未在图中识别到文本）") : fullText
                 self.viewModel.isExtractingOCR = false
             }
         }
@@ -874,7 +998,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
             let step: CGFloat = delta > 0 ? 0.05 : -0.05
             viewModel.opacity = max(0.15, min(1.0, viewModel.opacity + step))
             self.alphaValue = viewModel.opacity
-            viewModel.showHUD("透明度 \(Int(round(viewModel.opacity * 100)))%")
+            viewModel.showHUD(L10n.format("透明度 %d%%", Int(round(viewModel.opacity * 100))))
         } else {
             let factor: CGFloat = delta > 0 ? 1.06 : 0.94
             applyScale(viewModel.scale * factor)
@@ -920,7 +1044,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         setFrame(newFrame, display: true)
         isApplyingZoom = false
         syncCompanionWindows()
-        viewModel.showHUD("缩放 \(Int(round(clamped * 100)))%")
+        viewModel.showHUD(L10n.format("缩放 %d%%", Int(round(clamped * 100))))
     }
 
     public func toggleThumbnailMode() {
@@ -945,11 +1069,40 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         applyScale(viewModel.scale)
     }
 
+    private func applyImageEffect(_ effect: VisionImageEffect) {
+        guard !viewModel.isMinimized, imageEffectTask == nil else { return }
+        viewModel.commitInlineTextIfNeeded()
+        viewModel.showHUD(effect.progressMessage)
+        let sourceImage = viewModel.originalImage
+
+        imageEffectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.imageEffectTask = nil }
+
+            do {
+                let processed = try await VisionImageEffectsService.shared.apply(effect, to: sourceImage)
+                guard !Task.isCancelled else { return }
+                self.originalImage = processed
+                self.viewModel.originalImage = processed
+                self.viewModel.isInPlaceTranslated = false
+                self.viewModel.isTranslatingInPlace = false
+                self.viewModel.pendingTranslationID = UUID()
+                self.viewModel.cachedInPlaceResult = nil
+                self.viewModel.rebuildDisplayedImage()
+                self.viewModel.showHUD(effect.completionMessage)
+            } catch {
+                self.viewModel.showHUD(
+                    (error as? VisionImageEffectsError)?.errorDescription ?? L10n.string("无法生成图片效果。")
+                )
+            }
+        }
+    }
+
     public func flipHorizontally() {
         guard !viewModel.isMinimized else { return }
         viewModel.isFlippedHorizontally.toggle()
         viewModel.rebuildDisplayedImage()
-        viewModel.showHUD(viewModel.isFlippedHorizontally ? "已水平翻转" : "已恢复镜像")
+        viewModel.showHUD(L10n.string(viewModel.isFlippedHorizontally ? "已水平翻转" : "已恢复镜像"))
     }
 
     // MARK: - Mouse Click-Through with Always-Clickable Unlock Companion Pill!
@@ -964,7 +1117,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                 self.alphaValue = 0.78
             }
             showUnlockClickThroughPill()
-            viewModel.showHUD("已开启鼠标穿透 (点击右上角「退出穿透」可立即恢复)")
+            viewModel.showHUD(L10n.string("已开启鼠标穿透 (点击右上角「退出穿透」可立即恢复)"))
         } else {
             if let pill = unlockClickThroughPanel {
                 removeChildWindow(pill)
@@ -972,7 +1125,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
             }
             viewModel.opacity = 1.0
             self.alphaValue = 1.0
-            viewModel.showHUD("已解除鼠标穿透")
+            viewModel.showHUD(L10n.string("已解除鼠标穿透"))
         }
     }
 
@@ -1000,7 +1153,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                 HStack(spacing: 4) {
                     Image(systemName: "lock.open.fill")
                         .font(.system(size: 11, weight: .bold))
-                    Text("退出穿透")
+                    Text(L10n.string("退出穿透"))
                         .font(.system(size: 11.5, weight: .semibold))
                 }
                 .foregroundStyle(.white)
@@ -1032,7 +1185,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.writeObjects([img])
-        viewModel.showHUD("已复制图像")
+        viewModel.showHUD(L10n.string("已复制图像"))
     }
 
     public func saveImageToDisk() {
@@ -1048,19 +1201,23 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                let rep = NSBitmapImageRep(data: tiff),
                let png = rep.representation(using: .png, properties: [:]) {
                 try? png.write(to: url)
-                viewModel.showHUD("已保存 PNG")
+                viewModel.showHUD(L10n.string("已保存 PNG"))
             }
         }
     }
 
     override public func keyDown(with event: NSEvent) {
+        if EscapeKeyPolicy.isEscapeKeyCode(event.keyCode) {
+            SnipastePinManager.shared.closePin(self)
+            return
+        }
         if viewModel.isEditingInlineText {
             super.keyDown(with: event)
             return
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         switch event.keyCode {
-        case 53, 51: // Esc or Delete -> Close pin
+        case 51: // Delete -> Close pin
             SnipastePinManager.shared.closePin(self)
         case 6 where flags.contains([.command, .shift]): // Cmd+Shift+Z -> Redo
             viewModel.redoAnnotation()
@@ -1104,7 +1261,7 @@ private final class PinInteractiveHostingView<Content: View>: NSHostingView<Cont
 
 @MainActor
 fileprivate final class PinnedWindowViewModel: ObservableObject {
-    let originalImage: NSImage
+    var originalImage: NSImage
     @Published var displayedImage: NSImage
     @Published var scale: CGFloat = 1.0
     @Published var opacity: CGFloat = 1.0
@@ -1126,6 +1283,7 @@ fileprivate final class PinnedWindowViewModel: ObservableObject {
     @Published var annotations: [SnipAnnotationItem] = []
     @Published var redoStack: [SnipAnnotationItem] = []
     @Published var currentDraftAnnotation: SnipAnnotationItem?
+    @Published var selectedAnnotationID: UUID?
     var nextCounterNumber: Int = 1
 
     // Inline Direct Text Entry (NO popup dialog!)
@@ -1146,6 +1304,13 @@ fileprivate final class PinnedWindowViewModel: ObservableObject {
     @Published var isInPlaceTranslated: Bool = false
     @Published var isTranslatingInPlace: Bool = false
     var cachedInPlaceResult: InPlaceOCRResult?
+    @Published var translationConfiguration: TranslationSession.Configuration?
+    var pendingTranslationBlocks: [OCRTextBlock] = []
+    var pendingTranslationImage: NSImage?
+    var pendingTranslationID: UUID?
+    var pendingTranslationSourceCode: String = "en"
+    var pendingTranslationSourceCodes: [String] = []
+    var pendingTranslationTargetCode: String = "zh"
 
     // Image 1: Right-Side OCR Text Drawer (`[文]`)
     @Published var showOCRSidebar: Bool = false
@@ -1160,6 +1325,23 @@ fileprivate final class PinnedWindowViewModel: ObservableObject {
     init(originalImage: NSImage) {
         self.originalImage = originalImage
         self.displayedImage = originalImage
+    }
+
+    func recordCompletedScreenshotTranslation(blocks: [OCRTextBlock]) {
+        let source = AppSettings.targetLanguages.first(where: {
+            NativeTranslationSupport.languageCode(for: $0.label) == pendingTranslationSourceCode
+        })?.label ?? pendingTranslationSourceCode
+        let target = AppSettings.targetLanguages.first(where: {
+            NativeTranslationSupport.languageCode(for: $0.label) == pendingTranslationTargetCode
+        })?.label ?? pendingTranslationTargetCode
+        TranslationHistoryStore.shared.recordCompletedTranslation(
+            inputText: blocks.map(\.originalText).joined(separator: "\n"),
+            translatedText: blocks.map(\.translatedText).joined(separator: "\n"),
+            sourceLanguage: source,
+            targetLanguage: target,
+            sourceApp: "截图翻译",
+            trigger: .screenshot
+        )
     }
 
     func commitInlineTextIfNeeded() {
@@ -1280,12 +1462,14 @@ fileprivate final class PinnedWindowViewModel: ObservableObject {
 
 private struct PinOuterToolbarSwiftUIView: View {
     @ObservedObject var vm: PinnedWindowViewModel
+    @Environment(\.colorScheme) private var colorScheme
     let onToolbarHoverChanged: (Bool) -> Void
     let onSubbarLayoutChanged: () -> Void
     let onZoomIn: () -> Void
     let onZoomOut: () -> Void
     let onResetActualSize: () -> Void
     let onRotate90: () -> Void
+    let onApplyImageEffect: (VisionImageEffect) -> Void
     let onToggleAnnotationMode: () -> Void
     let onToggleInPlaceTranslation: () -> Void
     let onToggleOCRSidebar: () -> Void
@@ -1307,6 +1491,20 @@ private struct PinOuterToolbarSwiftUIView: View {
                 InstantBlackIconButton(icon: "plus.magnifyingglass", tooltip: "放大", action: onZoomIn)
                 InstantBlackIconButton(icon: "1.magnifyingglass", tooltip: "1:1 实际大小", action: onResetActualSize)
                 InstantBlackIconButton(icon: "rotate.right", tooltip: "旋转 90° (R)", action: onRotate90)
+
+                pinDivider
+
+                InstantBlackIconButton(
+                    icon: "drop.halffull",
+                    tooltip: "背景虚化",
+                    action: { onApplyImageEffect(.blurBackground) }
+                )
+
+                InstantBlackIconButton(
+                    icon: "person.crop.rectangle",
+                    tooltip: "提取主体（透明背景）",
+                    action: { onApplyImageEffect(.extractSubject) }
+                )
 
                 pinDivider
 
@@ -1355,10 +1553,10 @@ private struct PinOuterToolbarSwiftUIView: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(white: 0.10, opacity: 0.96))
+                    .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+                            .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1)
                     )
                     .shadow(color: .black.opacity(0.32), radius: 8, x: 0, y: 3)
             )
@@ -1367,14 +1565,14 @@ private struct PinOuterToolbarSwiftUIView: View {
             // Row 2: Outer Annotation Sub-Toolbar when annotation mode is active
             if vm.isAnnotating {
                 HStack(spacing: 2) {
-                    ForEach([SnipAnnotationTool.rectangle, .ellipse, .line, .arrow, .pencil, .marker, .counter, .text], id: \.id) { tool in
+                    ForEach(SnipAnnotationTool.allCases.filter { $0 != .selectMove }, id: \.id) { tool in
                         InstantBlackIconButton(
                             icon: tool.iconName,
                             isSelected: vm.activeTool == tool,
                             tooltip: tool.rawValue,
                             action: {
                                 vm.commitInlineTextIfNeeded()
-                                vm.activeTool = (vm.activeTool == tool) ? .selectMove : tool
+                                vm.activeTool = tool
                                 onSubbarLayoutChanged()
                             }
                         )
@@ -1411,7 +1609,7 @@ private struct PinOuterToolbarSwiftUIView: View {
                         )
                         Text("\(Int(vm.textFontSize))")
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                             .frame(minWidth: 24)
                         InstantBlackIconButton(
                             icon: "plus",
@@ -1431,7 +1629,9 @@ private struct PinOuterToolbarSwiftUIView: View {
                                 .overlay(
                                     Circle()
                                         .strokeBorder(
-                                            vm.strokeColor == nsColor ? Color.white : Color.white.opacity(0.35),
+                                            vm.strokeColor == nsColor
+                                                ? SnapLexTheme.toolbarForeground(for: colorScheme)
+                                                : SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.35),
                                             lineWidth: vm.strokeColor == nsColor ? 2.0 : 1.0
                                         )
                                 )
@@ -1444,15 +1644,16 @@ private struct PinOuterToolbarSwiftUIView: View {
                 .padding(.vertical, 4)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color(white: 0.10, opacity: 0.96))
+                        .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+                                .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1)
                         )
                 )
             }
         }
         .padding(.bottom, 4)
+        .snapLexAppearance()
         .onHover { hovering in
             onToolbarHoverChanged(hovering)
         }
@@ -1460,7 +1661,7 @@ private struct PinOuterToolbarSwiftUIView: View {
 
     private var pinDivider: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.18))
+            .fill(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.18))
             .frame(width: 1, height: 16)
             .padding(.horizontal, 3)
     }
@@ -1470,6 +1671,7 @@ private struct PinOuterToolbarSwiftUIView: View {
 
 private struct PinnedImageRootView: View {
     @ObservedObject var vm: PinnedWindowViewModel
+    @Environment(\.colorScheme) private var colorScheme
     let onImageHoverChanged: (Bool) -> Void
     var onToggleInPlaceTranslation: () -> Void
     var onToggleOCRSidebar: () -> Void
@@ -1484,6 +1686,7 @@ private struct PinnedImageRootView: View {
     var onClose: () -> Void
 
     @FocusState private var inlineTextFocused: Bool
+    @State private var annotationTransformGesture: PinAnnotationTransformGesture?
 
     var body: some View {
         ZStack {
@@ -1508,6 +1711,9 @@ private struct PinnedImageRootView: View {
                                 .resizable()
                                 .interpolation(.high)
                                 .frame(width: geo.size.width, height: geo.size.height)
+                                .compositingGroup()
+                                .shadow(color: .black.opacity(0.62), radius: 16, x: 0, y: 7)
+                                .shadow(color: .black.opacity(0.42), radius: 30, x: 0, y: 14)
 
                             Canvas { context, _ in
                                 for item in vm.annotations {
@@ -1515,6 +1721,10 @@ private struct PinnedImageRootView: View {
                                 }
                                 if let draft = vm.currentDraftAnnotation {
                                     Self.drawSwiftUIAnnotation(draft, in: &context)
+                                }
+                                if vm.isAnnotating,
+                                   let selected = vm.annotations.first(where: { $0.id == vm.selectedAnnotationID }) {
+                                    Self.drawSelectionHandles(for: selected, in: &context)
                                 }
                             }
                             .frame(width: geo.size.width, height: geo.size.height)
@@ -1524,7 +1734,7 @@ private struct PinnedImageRootView: View {
                             .onChange(of: geo.size) { _, newSize in
                                 vm.canvasSize = newSize
                             }
-                            .allowsHitTesting(vm.isAnnotating && vm.activeTool != .selectMove)
+                            .allowsHitTesting(vm.isAnnotating)
                             .gesture(
                                 DragGesture(minimumDistance: 0)
                                     .onChanged { value in
@@ -1537,7 +1747,7 @@ private struct PinnedImageRootView: View {
 
                             // Inline Direct Text Input (Zero Popup & Zero Background Color!)
                             if vm.isEditingInlineText {
-                                TextField("输入文字", text: $vm.inlineTextValue)
+                                TextField(L10n.string("输入文字"), text: $vm.inlineTextValue)
                                     .textFieldStyle(.plain)
                                     .font(Font(vm.currentTextFont))
                                     .foregroundStyle(Color(nsColor: vm.strokeColor))
@@ -1562,13 +1772,13 @@ private struct PinnedImageRootView: View {
                                     Spacer()
                                     HStack(spacing: 8) {
                                         ProgressView().controlSize(.small)
-                                        Text("正在原位贴合翻译...")
+                                        Text(L10n.string("正在原位贴合翻译..."))
                                             .font(.system(size: 11.5, weight: .semibold))
-                                            .foregroundStyle(.white)
+                                            .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                                     }
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
-                                    .background(Capsule().fill(Color.black.opacity(0.82)))
+                                    .background(Capsule().fill(SnapLexTheme.toolbarBackground(for: colorScheme)))
                                     Spacer()
                                 }
                             } else if let hud = vm.hudMessage {
@@ -1576,10 +1786,10 @@ private struct PinnedImageRootView: View {
                                     Spacer()
                                     Text(hud)
                                         .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(.white)
+                                        .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 4.5)
-                                        .background(Capsule().fill(Color.black.opacity(0.82)))
+                                        .background(Capsule().fill(SnapLexTheme.toolbarBackground(for: colorScheme)))
                                         .padding(.bottom, 8)
                                 }
                             }
@@ -1598,36 +1808,109 @@ private struct PinnedImageRootView: View {
         .onHover { hovering in
             onImageHoverChanged(hovering)
         }
+        .snapLexAppearance()
+        .translationTask(vm.translationConfiguration) { session in
+            guard let requestID = vm.pendingTranslationID,
+                  let sourceImage = vm.pendingTranslationImage,
+                  !vm.pendingTranslationBlocks.isEmpty else { return }
+
+            do {
+                try await session.prepareTranslation()
+                guard vm.pendingTranslationID == requestID else { return }
+
+                let sourceCode = vm.pendingTranslationSourceCode
+                var blocks = vm.pendingTranslationBlocks
+                let translatableBlocks = blocks.filter {
+                    NativeTranslationSupport.sourceLanguageCode(for: $0.originalText) == sourceCode
+                }
+                let requests = translatableBlocks.map {
+                    TranslationSession.Request(sourceText: $0.originalText, clientIdentifier: $0.id.uuidString)
+                }
+                var translatedByID: [String: String] = [:]
+                if !requests.isEmpty {
+                    let responses = try await session.translations(from: requests)
+                    guard vm.pendingTranslationID == requestID else { return }
+                    for response in responses {
+                        if let id = response.clientIdentifier {
+                            translatedByID[id] = response.targetText
+                        }
+                    }
+                }
+
+                for index in blocks.indices {
+                    if NativeTranslationSupport.sourceLanguageCode(for: blocks[index].originalText) == sourceCode {
+                        blocks[index].translatedText = translatedByID[blocks[index].id.uuidString] ?? blocks[index].originalText
+                    } else if blocks[index].translatedText.isEmpty {
+                        blocks[index].translatedText = blocks[index].originalText
+                    }
+                }
+
+                vm.pendingTranslationBlocks = blocks
+                if !vm.pendingTranslationSourceCodes.isEmpty {
+                    let nextSourceCode = vm.pendingTranslationSourceCodes.removeFirst()
+                    vm.pendingTranslationSourceCode = nextSourceCode
+                    vm.translationConfiguration = NativeTranslationSupport.makeConfiguration(
+                        source: nextSourceCode,
+                        target: vm.pendingTranslationTargetCode
+                    )
+                    return
+                }
+
+                let originalText = blocks.map(\.originalText).joined(separator: "\n")
+                let translatedText = blocks.map(\.translatedText).joined(separator: "\n")
+                vm.recordCompletedScreenshotTranslation(blocks: blocks)
+                let renderedImage = InPlaceOCRService.renderTranslatedBlocksOnImage(baseImage: sourceImage, blocks: blocks)
+                vm.cachedInPlaceResult = InPlaceOCRResult(
+                    blocks: blocks,
+                    fullOriginalText: originalText,
+                    fullTranslatedText: translatedText,
+                    renderedTranslatedImage: renderedImage
+                )
+                vm.ocrBlocks = blocks
+                vm.isTranslatingInPlace = false
+                vm.rebuildDisplayedImage()
+                vm.showHUD(L10n.string("✓ 原位翻译完成"))
+            } catch {
+                guard vm.pendingTranslationID == requestID else { return }
+                vm.isTranslatingInPlace = false
+                vm.isInPlaceTranslated = false
+                vm.showHUD(L10n.format("系统翻译失败：%@", NativeTranslationSupport.userFacingError(for: error)))
+            }
+        }
         .contextMenu {
-            Button(vm.isInPlaceTranslated ? "还原原图 ([文A])" : "图片原位贴合翻译 ([文A])") {
+            Button(L10n.string(vm.isInPlaceTranslated ? "还原原图 ([文A])" : "图片原位贴合翻译 ([文A])")) {
                 onToggleInPlaceTranslation()
             }
-            Button(vm.showOCRSidebar ? "关闭右侧提取文字栏 ([文])" : "右侧提取图中文字 ([文])") {
+            Button(L10n.string(vm.showOCRSidebar ? "关闭右侧提取文字栏 ([文])" : "右侧提取图中文字 ([文])")) {
                 onToggleOCRSidebar()
             }
-            Button(vm.isAnnotating ? "完成贴图标注" : "在贴图上直接标注") {
+            Button(L10n.string(vm.isAnnotating ? "完成贴图标注" : "在贴图上直接标注")) {
                 onToggleAnnotationMode()
             }
             Divider()
-            Button("复制图像 (⌘C)") { onCopyImage() }
-            Button("保存图片 (⌘S)") { onSaveImage() }
+            Button(L10n.string("复制图像 (⌘C)")) { onCopyImage() }
+            Button(L10n.string("保存图片 (⌘S)")) { onSaveImage() }
             Divider()
-            Button("顺时针旋转 90° (R)") { onRotate90() }
-            Button("水平镜像翻转 (H)") { onFlipHorizontal() }
-            Button(vm.hasWindowShadow ? "取消窗口阴影" : "开启窗口阴影") { onToggleShadow() }
-            Button(vm.isMinimized ? "展开贴图 (双击)" : "折叠为小图标 (双击)") { onToggleThumbnail() }
-            Button(vm.isClickThrough ? "解除鼠标穿透" : "开启鼠标穿透 (右上角可随时退出)") { onToggleClickThrough() }
+            Button(L10n.string("顺时针旋转 90° (R)")) { onRotate90() }
+            Button(L10n.string("水平镜像翻转 (H)")) { onFlipHorizontal() }
+            Button(L10n.string(vm.hasWindowShadow ? "取消窗口阴影" : "开启窗口阴影")) { onToggleShadow() }
+            Button(L10n.string(vm.isMinimized ? "展开贴图 (双击)" : "折叠为小图标 (双击)")) { onToggleThumbnail() }
+            Button(L10n.string(vm.isClickThrough ? "解除鼠标穿透" : "开启鼠标穿透 (右上角可随时退出)")) { onToggleClickThrough() }
             Divider()
-            Button("关闭贴图 (Esc)", role: .destructive) { onClose() }
+            Button(L10n.string("关闭贴图 (Esc)"), role: .destructive) { onClose() }
         }
     }
 
     // MARK: - Pin Annotation Drawing & Gesture Handlers
 
     private func handlePinAnnotationDrag(_ value: DragGesture.Value, in size: CGSize) {
-        guard vm.isAnnotating, vm.activeTool != .selectMove else { return }
+        guard vm.isAnnotating else { return }
+        handlePinAnnotationTransformDrag(value)
+        if annotationTransformGesture != nil { return }
         let start = value.startLocation
         let curr = value.location
+
+        if vm.activeTool == .selectMove { return }
 
         if vm.activeTool == .text || vm.activeTool == .counter {
             return
@@ -1652,7 +1935,11 @@ private struct PinnedImageRootView: View {
     }
 
     private func handlePinAnnotationEnd(_ value: DragGesture.Value, in size: CGSize) {
-        guard vm.isAnnotating, vm.activeTool != .selectMove else { return }
+        guard vm.isAnnotating else { return }
+        if annotationTransformGesture != nil {
+            annotationTransformGesture = nil
+            return
+        }
         let pt = value.location
 
         if vm.activeTool == .counter {
@@ -1685,7 +1972,87 @@ private struct PinnedImageRootView: View {
         }
     }
 
+    private func handlePinAnnotationTransformDrag(_ value: DragGesture.Value) {
+        let start = value.startLocation
+        let current = value.location
+
+        if case nil = annotationTransformGesture {
+            vm.commitInlineTextIfNeeded()
+
+            if let selectedIndex = vm.annotations.firstIndex(where: { $0.id == vm.selectedAnnotationID }),
+               let handle = AnnotationGeometry.hitTestHandle(at: start, for: vm.annotations[selectedIndex], yAxisDown: true) {
+                let item = vm.annotations[selectedIndex]
+                switch handle {
+                case .rotate:
+                    let center = item.transformCenter
+                    let angle = atan2(start.y - center.y, start.x - center.x)
+                    annotationTransformGesture = .rotate(id: item.id, initial: item, center: center, startAngle: angle)
+                case .resize(let resizeHandle):
+                    let anchor = AnnotationGeometry.oppositeAnchor(
+                        for: resizeHandle,
+                        in: item.selectionBounds,
+                        yAxisDown: true
+                    )
+                    let distance = max(4, hypot(start.x - anchor.x, start.y - anchor.y))
+                    annotationTransformGesture = .resize(id: item.id, initial: item, anchor: anchor, startDistance: distance)
+                }
+            } else if let index = vm.annotations.indices.reversed().first(where: {
+                vm.annotations[$0].contains(start)
+            }) {
+                let item = vm.annotations[index]
+                if vm.selectedAnnotationID == item.id {
+                    annotationTransformGesture = .move(id: item.id, initial: item, start: start)
+                } else {
+                    vm.selectedAnnotationID = item.id
+                    annotationTransformGesture = .selectOnly
+                }
+            } else {
+                vm.selectedAnnotationID = nil
+                if vm.activeTool == .selectMove {
+                    annotationTransformGesture = .ignored
+                }
+            }
+        }
+
+        guard let gesture = annotationTransformGesture else { return }
+        let updated: SnipAnnotationItem
+        let itemID: UUID
+        switch gesture {
+        case .ignored, .selectOnly:
+            return
+        case .move(let id, let initial, let origin):
+            itemID = id
+            updated = initial.translated(by: CGPoint(x: current.x - origin.x, y: current.y - origin.y))
+        case .resize(let id, let initial, let anchor, let startDistance):
+            itemID = id
+            let currentDistance = hypot(current.x - anchor.x, current.y - anchor.y)
+            updated = initial.scaled(by: currentDistance / startDistance, around: anchor)
+        case .rotate(let id, let initial, let center, let startAngle):
+            itemID = id
+            let currentAngle = atan2(current.y - center.y, current.x - center.x)
+            updated = initial.rotated(by: (currentAngle - startAngle) * 180 / .pi)
+        }
+
+        guard let index = vm.annotations.firstIndex(where: { $0.id == itemID }) else { return }
+        vm.annotations[index] = updated
+        vm.selectedAnnotationID = itemID
+    }
+
     fileprivate static func drawSwiftUIAnnotation(_ item: SnipAnnotationItem, in context: inout GraphicsContext) {
+        if abs(item.rotationDegrees.truncatingRemainder(dividingBy: 360)) > 0.001 {
+            context.drawLayer { layer in
+                let center = item.transformCenter
+                layer.translateBy(x: center.x, y: center.y)
+                layer.rotate(by: .degrees(Double(item.rotationDegrees)))
+                layer.translateBy(x: -center.x, y: -center.y)
+                drawUnrotatedSwiftUIAnnotation(item, in: &layer)
+            }
+        } else {
+            drawUnrotatedSwiftUIAnnotation(item, in: &context)
+        }
+    }
+
+    private static func drawUnrotatedSwiftUIAnnotation(_ item: SnipAnnotationItem, in context: inout GraphicsContext) {
         let color = Color(nsColor: item.color)
         let rect = item.boundingRect
 
@@ -1744,11 +2111,11 @@ private struct PinnedImageRootView: View {
             let path = Path(rect)
             context.fill(path, with: .color(Color.gray.opacity(0.55)))
         case .counter:
-            let r: CGFloat = 12
+            let r = max(13, item.lineWidth * 3)
             let badge = CGRect(x: item.startPoint.x - r, y: item.startPoint.y - r, width: r * 2, height: r * 2)
             context.fill(Path(ellipseIn: badge), with: .color(color))
             context.draw(
-                Text("\(item.counterNumber)").font(.system(size: 12, weight: .bold)).foregroundStyle(.white),
+                Text("\(item.counterNumber)").font(.system(size: max(13, item.lineWidth * 3), weight: .bold)).foregroundStyle(.white),
                 at: item.startPoint
             )
         case .text:
@@ -1763,17 +2130,42 @@ private struct PinnedImageRootView: View {
         }
     }
 
+    private static func drawSelectionHandles(for item: SnipAnnotationItem, in context: inout GraphicsContext) {
+        let rect = item.selectionBounds
+        var outline = Path()
+        outline.addRect(rect)
+        context.stroke(outline, with: .color(.white), lineWidth: 1)
+        context.stroke(outline, with: .color(.accentColor), lineWidth: 0.7)
+
+        let rotatePoint = AnnotationGeometry.rotateHandlePoint(for: item, yAxisDown: true)
+        var connector = Path()
+        connector.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        connector.addLine(to: rotatePoint)
+        context.stroke(connector, with: .color(.white), lineWidth: 1.5)
+
+        let rotateRect = CGRect(x: rotatePoint.x - 5, y: rotatePoint.y - 5, width: 10, height: 10)
+        context.fill(Path(ellipseIn: rotateRect), with: .color(.white))
+        context.stroke(Path(ellipseIn: rotateRect), with: .color(.accentColor), lineWidth: 1.5)
+
+        for handle in ResizeHandlePosition.allCases {
+            let point = AnnotationGeometry.point(for: handle, in: rect, yAxisDown: true)
+            let knob = CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)
+            context.fill(Path(roundedRect: knob, cornerRadius: 1.5), with: .color(.white))
+            context.stroke(Path(roundedRect: knob, cornerRadius: 1.5), with: .color(.accentColor), lineWidth: 1.2)
+        }
+    }
+
     // MARK: - Right-Side OCR Text Drawer (Image 1)
 
     private var ocrRightDrawerView: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(vm.showTranslatedInSidebar ? "译文内容" : "提取文字 (OCR)")
+                Text(L10n.string(vm.showTranslatedInSidebar ? "译文内容" : "提取文字 (OCR)"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if vm.cachedInPlaceResult != nil {
-                    Button(vm.showTranslatedInSidebar ? "看原文" : "看译文") {
+                    Button(L10n.string(vm.showTranslatedInSidebar ? "看原文" : "看译文")) {
                         vm.showTranslatedInSidebar.toggle()
                         if let cached = vm.cachedInPlaceResult {
                             vm.ocrSidebarText = vm.showTranslatedInSidebar
@@ -1788,7 +2180,7 @@ private struct PinnedImageRootView: View {
                 Button(action: {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(vm.ocrSidebarText, forType: .string)
-                    vm.showHUD("已复制全部文字")
+                    vm.showHUD(L10n.string("已复制全部文字"))
                 }) {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 12))
@@ -1805,7 +2197,7 @@ private struct PinnedImageRootView: View {
                 VStack(spacing: 8) {
                     Spacer()
                     ProgressView()
-                    Text("正在识别图中文字...")
+                    Text(L10n.string("正在识别图中文字..."))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -1821,4 +2213,12 @@ private struct PinnedImageRootView: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
     }
+}
+
+private enum PinAnnotationTransformGesture {
+    case move(id: UUID, initial: SnipAnnotationItem, start: CGPoint)
+    case resize(id: UUID, initial: SnipAnnotationItem, anchor: CGPoint, startDistance: CGFloat)
+    case rotate(id: UUID, initial: SnipAnnotationItem, center: CGPoint, startAngle: CGFloat)
+    case selectOnly
+    case ignored
 }

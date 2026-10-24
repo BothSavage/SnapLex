@@ -3,8 +3,9 @@ import PackageDescription
 
 let package = Package(
     name: "SnapLex",
+    defaultLocalization: "zh-Hans",
     platforms: [
-        .macOS(.v14)
+        .macOS("15.0")
     ],
     products: [
         .executable(name: "SnapLex", targets: ["SnapLex"])
@@ -13,16 +14,29 @@ let package = Package(
         .executableTarget(
             name: "SnapLex",
             path: "Sources/SnapLex",
+            resources: [.process("Resources")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("Vision"),
+                .linkedFramework("CoreImage"),
+                .linkedFramework("Translation"),
+                .linkedFramework("NaturalLanguage"),
+                .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo"),
                 .linkedFramework("CoreServices"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("AVFoundation"),
-                .linkedFramework("ApplicationServices")
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("ServiceManagement")
             ]
+        ),
+        .testTarget(
+            name: "SnapLexTests",
+            dependencies: ["SnapLex"],
+            path: "Tests/SnapLexTests"
         )
     ]
 )

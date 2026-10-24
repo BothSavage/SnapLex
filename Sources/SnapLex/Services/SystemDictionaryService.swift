@@ -26,7 +26,7 @@ public final class SystemDictionaryService {
         }
 
         let phonetic = extractPhonetic(from: rawDef)
-        let cleaned = formatRawDefinition(rawDef)
+        let cleaned = Self.formatRawDefinition(rawDef)
         return SystemDictResult(term: trimmed, phonetic: phonetic, formattedDefinition: cleaned)
     }
 
@@ -59,19 +59,31 @@ public final class SystemDictionaryService {
         return ""
     }
 
-    private func formatRawDefinition(_ raw: String) -> String {
+    static func formatRawDefinition(_ raw: String) -> String {
         var text = raw
-        // Insert line breaks before numbered senses or bullet markers for readability
+        // Keep dictionary senses as separate rows even when DictionaryServices returns
+        // the whole article as one paragraph.
         let replacements: [(String, String)] = [
             ("• ", "\n• "),
+            ("▪ ", "\n▪ "),
             (" ▶ ", "\n▶ "),
-            ("ORIGIN ", "\n\n【词源】"),
-            ("PHRASES ", "\n\n【短语】"),
-            ("DERIVATIVES ", "\n\n【派生】")
+            ("ORIGIN ", "\n\n\(L10n.string("词源"))\n"),
+            ("PHRASES ", "\n\n\(L10n.string("短语"))\n"),
+            ("DERIVATIVES ", "\n\n\(L10n.string("派生"))\n")
         ]
         for (target, replacement) in replacements {
             text = text.replacingOccurrences(of: target, with: replacement)
         }
+        for marker in ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"] {
+            text = text.replacingOccurrences(of: marker, with: "\n\(marker)")
+        }
+        for marker in ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9."] {
+            text = text.replacingOccurrences(of: " \(marker) ", with: "\n\(marker) ")
+        }
+        text = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: "\n")
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

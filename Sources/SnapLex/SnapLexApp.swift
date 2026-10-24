@@ -1,83 +1,149 @@
 import AppKit
 import SwiftUI
+import Combine
 
 @main
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
+    private var controlPopover: NSPopover?
+    private var languageObserver: AnyCancellable?
+    private var localShortcutMonitor: Any?
+    private var explicitQuitRequested = false
 
     public static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
+        app.setActivationPolicy(.regular)
         app.run()
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = icon
+        }
         setupStatusBarMenu()
+        languageObserver = AppSettings.shared.$appLanguage
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.setupStatusBarMenu() }
+            }
         setupHotKeyCallbacks()
+        setupLocalShortcutMonitor()
+        EscapeKeyManager.shared.start()
         SelectionAndHotKeyManager.shared.start()
         SnipasteCaptureManager.shared.prewarm()
     }
 
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows {
+            WindowManager.shared.showDashboard()
+        }
+        return true
+    }
+
+    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !explicitQuitRequested else { return .terminateNow }
+        WindowManager.shared.hideDashboard()
+        return .terminateCancel
+    }
+
     private func setupStatusBarMenu() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let item: NSStatusItem
+        if let statusItem {
+            item = statusItem
+        } else {
+            item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            statusItem = item
+        }
         if let button = item.button {
             button.image = SnapLexBrandLogo.makeMenuBarImage()
-            button.imagePosition = .imageLeading
-            button.title = " SnapLex"
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = #selector(toggleControlPopover)
+            button.toolTip = L10n.string("打开控制台")
+        }
+        item.menu = nil
+        controlPopover = nil
+    }
+
+    @objc private func toggleControlPopover() {
+        guard let button = statusItem?.button else { return }
+        if let controlPopover, controlPopover.isShown {
+            controlPopover.performClose(nil)
+            return
         }
 
-        let menu = NSMenu()
+        if controlPopover == nil {
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.animates = true
+            popover.contentSize = NSSize(width: 360, height: 600)
+            popover.contentViewController = NSHostingController(
+                rootView: ControlPanelPopoverView(
+                    onScreenshot: { [weak self] in
+                        self?.closeControlPopover()
+                        WindowManager.shared.triggerScreenshotFlow()
+                    },
+                    onRecord: { [weak self] in
+                        self?.closeControlPopover()
+                        ScreenRecorderManager.shared.showAssistant()
+                    },
+                    onPinClipboard: { [weak self] in
+                        self?.closeControlPopover()
+                        WindowManager.shared.triggerPinFlow()
+                    },
+                    onOpenDashboard: { [weak self] section in
+                        self?.closeControlPopover()
+                        WindowManager.shared.showDashboard(section: section)
+                    },
+                    onQuit: { [weak self] in
+                        self?.closeControlPopover()
+                        self?.quitApp()
+                    }
+                )
+            )
+            controlPopover = popover
+        }
 
-        let screenshotItem = NSMenuItem(title: "截图 · 标注 · 滚动长截图 (F1 / ⌥+S)", action: #selector(triggerScreenshotTranslate), keyEquivalent: "s")
-        screenshotItem.keyEquivalentModifierMask = [.option]
-        menu.addItem(screenshotItem)
+        controlPopover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
 
-        let recorderItem = NSMenuItem(title: "录屏 (导出 MP4 / GIF) (⌥ + R)", action: #selector(openScreenRecorder), keyEquivalent: "r")
-        recorderItem.keyEquivalentModifierMask = [.option]
-        menu.addItem(recorderItem)
+    private func closeControlPopover() {
+        controlPopover?.performClose(nil)
+    }
 
-        let pinClipboardItem = NSMenuItem(title: "剪贴板贴图 (F3 / ⌥+P)", action: #selector(triggerPinClipboard), keyEquivalent: "p")
-        pinClipboardItem.keyEquivalentModifierMask = [.option]
-        menu.addItem(pinClipboardItem)
+    private func setupLocalShortcutMonitor() {
+        guard localShortcutMonitor == nil else { return }
+        localShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  !ShortcutRecorderController.shared.isCapturing,
+                  let shortcut = GlobalShortcut.allCases.first(where: { !$0.isGlobal && self.matches(event, shortcut: $0) }) else {
+                return event
+            }
+            switch shortcut {
+            case .openSettings:
+                self.openSettings()
+            case .quitApp:
+                WindowManager.shared.hideDashboard()
+            default:
+                break
+            }
+            return nil
+        }
+    }
 
-        let restorePinItem = NSMenuItem(title: "恢复上一个关闭的贴图 (⇧ + F3)", action: #selector(restoreLastClosedPin), keyEquivalent: "")
-        menu.addItem(restorePinItem)
-
-        let togglePinsItem = NSMenuItem(title: "隐藏 / 显示所有桌面贴图", action: #selector(toggleAllPinsVisibility), keyEquivalent: "")
-        menu.addItem(togglePinsItem)
-
-        let closeAllPinsItem = NSMenuItem(title: "清空所有桌面贴图", action: #selector(closeAllPins), keyEquivalent: "")
-        menu.addItem(closeAllPinsItem)
-
-        menu.addItem(.separator())
-
-        let selectionItem = NSMenuItem(title: "划词直接翻译 (⌥ + A)", action: #selector(triggerSelectionTranslate), keyEquivalent: "a")
-        selectionItem.keyEquivalentModifierMask = [.option]
-        menu.addItem(selectionItem)
-
-        let panelItem = NSMenuItem(title: "打开翻译卡片 (⌥ + D)", action: #selector(openFloatingCard), keyEquivalent: "d")
-        panelItem.keyEquivalentModifierMask = [.option]
-        menu.addItem(panelItem)
-
-        let pillDemoItem = NSMenuItem(title: "预览划词控制栏", action: #selector(previewPillBar), keyEquivalent: "")
-        menu.addItem(pillDemoItem)
-
-        menu.addItem(.separator())
-
-        let settingsItem = NSMenuItem(title: "偏好设置...", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.keyEquivalentModifierMask = [.command]
-        menu.addItem(settingsItem)
-
-        menu.addItem(.separator())
-
-        let quitItem = NSMenuItem(title: "退出 SnapLex", action: #selector(quitApp), keyEquivalent: "q")
-        menu.addItem(quitItem)
-
-        item.menu = menu
-        self.statusItem = item
+    private func matches(_ event: NSEvent, shortcut: GlobalShortcut) -> Bool {
+        let binding = AppSettings.shared.shortcutBinding(for: shortcut)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let relevantFlags = flags.intersection([.command, .option, .control, .shift])
+        return event.keyCode == binding.keyCode && relevantFlags.rawValue == binding.modifiers
     }
 
     private func setupHotKeyCallbacks() {
@@ -129,7 +195,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         mgr.onTriggerManualPanel = {
-            WindowManager.shared.showTranslationCard(nearMouse: true)
+            WindowManager.shared.showTranslationCard(nearMouse: true, focusInput: true)
         }
 
         mgr.onOutsideMouseDown = { pt in
@@ -139,7 +205,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func previewPillBar() {
         TranslatorViewModel.shared.preparePillSelection(
-            text: "SnapLex 极简划词控制栏",
+            text: L10n.string("SnapLex 极简划词控制栏"),
             sourceApp: "SnapLex",
             trigger: .mouseSelect
         )
@@ -148,14 +214,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func triggerSelectionTranslate() {
         Task { @MainActor in
-            if let payload = await SelectionAndHotKeyManager.shared.grabCurrentSelection() {
-                TranslatorViewModel.shared.startTranslation(
-                    text: payload.text,
-                    mode: .translate,
-                    sourceApp: payload.sourceApp,
-                    trigger: payload.trigger
-                )
-            }
+            guard let payload = await SelectionAndHotKeyManager.shared.grabCurrentSelection() else { return }
+            TranslatorViewModel.shared.startTranslation(
+                text: payload.text,
+                mode: .translate,
+                sourceApp: payload.sourceApp,
+                trigger: payload.trigger
+            )
             WindowManager.shared.showTranslationCard(nearMouse: true)
         }
     }
@@ -185,14 +250,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openFloatingCard() {
-        WindowManager.shared.showTranslationCard(nearMouse: false)
+        WindowManager.shared.showTranslationCard(nearMouse: false, focusInput: true)
     }
 
     @objc private func openSettings() {
         WindowManager.shared.showSettingsWindow()
     }
 
+    @objc private func openTranslationHistory() {
+        WindowManager.shared.showTranslationHistoryWindow()
+    }
+
+    @objc private func openScreenshotHistory() {
+        WindowManager.shared.showScreenshotHistoryWindow()
+    }
+
     @objc private func quitApp() {
+        explicitQuitRequested = true
         NSApp.terminate(nil)
     }
 }

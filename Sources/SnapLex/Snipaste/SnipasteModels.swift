@@ -119,6 +119,7 @@ public struct SnipAnnotationItem: Identifiable {
     public var fontSize: CGFloat
     public var isBold: Bool
     public var isItalic: Bool
+    public var rotationDegrees: CGFloat
 
     public init(
         tool: SnipAnnotationTool,
@@ -132,7 +133,8 @@ public struct SnipAnnotationItem: Identifiable {
         counterNumber: Int = 1,
         fontSize: CGFloat = SnipTextStyle.defaultFontSize,
         isBold: Bool = false,
-        isItalic: Bool = false
+        isItalic: Bool = false,
+        rotationDegrees: CGFloat = 0
     ) {
         self.tool = tool
         self.startPoint = startPoint
@@ -146,6 +148,7 @@ public struct SnipAnnotationItem: Identifiable {
         self.fontSize = fontSize
         self.isBold = isBold
         self.isItalic = isItalic
+        self.rotationDegrees = rotationDegrees
     }
 
     public var textFont: NSFont {
@@ -158,6 +161,219 @@ public struct SnipAnnotationItem: Identifiable {
         let maxX = max(startPoint.x, endPoint.x)
         let maxY = max(startPoint.y, endPoint.y)
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    public var transformCenter: CGPoint {
+        CGPoint(x: unrotatedVisualBounds.midX, y: unrotatedVisualBounds.midY)
+    }
+
+    /// Bounds used for selection, hit testing, and transform handles.
+    public var selectionBounds: CGRect {
+        let visual = unrotatedVisualBounds.insetBy(dx: -selectionPadding, dy: -selectionPadding)
+        guard abs(rotationDegrees.truncatingRemainder(dividingBy: 360)) > 0.001 else { return visual }
+        let corners = [
+            CGPoint(x: visual.minX, y: visual.minY),
+            CGPoint(x: visual.maxX, y: visual.minY),
+            CGPoint(x: visual.maxX, y: visual.maxY),
+            CGPoint(x: visual.minX, y: visual.maxY)
+        ].map { Self.rotate($0, around: transformCenter, by: rotationDegrees) }
+        return Self.bounds(of: corners)
+    }
+
+    public func contains(_ point: CGPoint, tolerance: CGFloat = 8) -> Bool {
+        let localPoint = Self.rotate(point, around: transformCenter, by: -rotationDegrees)
+        let bounds = unrotatedVisualBounds
+        let slop = max(tolerance, lineWidth / 2 + 3)
+
+        switch tool {
+        case .selectMove:
+            return false
+        case .ellipse:
+            let expanded = bounds.insetBy(dx: -slop, dy: -slop)
+            guard expanded.width > 0, expanded.height > 0 else { return false }
+            let dx = (localPoint.x - expanded.midX) / (expanded.width / 2)
+            let dy = (localPoint.y - expanded.midY) / (expanded.height / 2)
+            return dx * dx + dy * dy <= 1
+        case .line:
+            return Self.distance(localPoint, toSegmentFrom: startPoint, to: endPoint) <= slop
+        case .arrow:
+            let shaftHit = Self.distance(localPoint, toSegmentFrom: startPoint, to: endPoint) <= slop + lineWidth
+            let headRadius = max(12, lineWidth * 3.8) + slop
+            return shaftHit || hypot(localPoint.x - endPoint.x, localPoint.y - endPoint.y) <= headRadius
+        case .pencil, .marker:
+            let path = points.count > 1 ? points : [startPoint, endPoint]
+            return zip(path, path.dropFirst()).contains {
+                Self.distance(localPoint, toSegmentFrom: $0.0, to: $0.1) <= slop + (tool == .marker ? max(7, lineWidth * 1.25) : 0)
+            }
+        case .counter:
+            let radius = max(13, lineWidth * 3)
+            return hypot(localPoint.x - startPoint.x, localPoint.y - startPoint.y) <= radius + slop
+        case .text:
+            return bounds.insetBy(dx: -slop, dy: -slop).contains(localPoint)
+        case .rectangle, .mosaic, .blur:
+            return bounds.insetBy(dx: -slop, dy: -slop).contains(localPoint)
+        }
+    }
+
+    public func translated(by delta: CGPoint) -> SnipAnnotationItem {
+        var copy = self
+        copy.startPoint = CGPoint(x: startPoint.x + delta.x, y: startPoint.y + delta.y)
+        copy.endPoint = CGPoint(x: endPoint.x + delta.x, y: endPoint.y + delta.y)
+        copy.points = points.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }
+        return copy
+    }
+
+    public func scaled(by factor: CGFloat, around anchor: CGPoint) -> SnipAnnotationItem {
+        let safeFactor = min(10, max(0.1, factor))
+        var copy = self
+        copy.startPoint = Self.scale(startPoint, around: anchor, by: safeFactor)
+        copy.endPoint = Self.scale(endPoint, around: anchor, by: safeFactor)
+        copy.points = points.map { Self.scale($0, around: anchor, by: safeFactor) }
+        copy.lineWidth = max(0.5, min(160, lineWidth * safeFactor))
+        copy.fontSize = max(6, min(600, fontSize * safeFactor))
+        return copy
+    }
+
+    public func rotated(by deltaDegrees: CGFloat) -> SnipAnnotationItem {
+        var copy = self
+        copy.rotationDegrees = (rotationDegrees + deltaDegrees).truncatingRemainder(dividingBy: 360)
+        return copy
+    }
+
+    private var unrotatedVisualBounds: CGRect {
+        switch tool {
+        case .pencil, .marker:
+            return Self.bounds(of: points.count > 1 ? points : [startPoint, endPoint])
+        case .counter:
+            let radius = max(13, lineWidth * 3)
+            return CGRect(x: startPoint.x - radius, y: startPoint.y - radius, width: radius * 2, height: radius * 2)
+        case .text:
+            let size = (text as NSString).size(withAttributes: [.font: textFont])
+            let height = max(fontSize, size.height)
+            return CGRect(
+                x: startPoint.x,
+                y: startPoint.y - height / 2,
+                width: max(10, size.width),
+                height: height
+            )
+        default:
+            return boundingRect
+        }
+    }
+
+    private var selectionPadding: CGFloat {
+        if tool == .marker {
+            return max(7, lineWidth * 1.75)
+        }
+        return max(5, lineWidth / 2)
+    }
+
+    private static func bounds(of points: [CGPoint]) -> CGRect {
+        guard let first = points.first else { return .zero }
+        let minX = points.dropFirst().reduce(first.x) { min($0, $1.x) }
+        let maxX = points.dropFirst().reduce(first.x) { max($0, $1.x) }
+        let minY = points.dropFirst().reduce(first.y) { min($0, $1.y) }
+        let maxY = points.dropFirst().reduce(first.y) { max($0, $1.y) }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    private static func rotate(_ point: CGPoint, around center: CGPoint, by degrees: CGFloat) -> CGPoint {
+        let radians = degrees * .pi / 180
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        return CGPoint(
+            x: center.x + dx * cos(radians) - dy * sin(radians),
+            y: center.y + dx * sin(radians) + dy * cos(radians)
+        )
+    }
+
+    private static func scale(_ point: CGPoint, around anchor: CGPoint, by factor: CGFloat) -> CGPoint {
+        CGPoint(
+            x: anchor.x + (point.x - anchor.x) * factor,
+            y: anchor.y + (point.y - anchor.y) * factor
+        )
+    }
+
+    private static func distance(_ point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0.001 else { return hypot(point.x - start.x, point.y - start.y) }
+        let projection = min(1, max(0, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+        let nearest = CGPoint(x: start.x + projection * dx, y: start.y + projection * dy)
+        return hypot(point.x - nearest.x, point.y - nearest.y)
+    }
+}
+
+public enum AnnotationTransformHandle: Equatable {
+    case resize(ResizeHandlePosition)
+    case rotate
+}
+
+public enum AnnotationGeometry {
+    public static func point(
+        for handle: ResizeHandlePosition,
+        in rect: CGRect,
+        yAxisDown: Bool
+    ) -> CGPoint {
+        let top = yAxisDown ? rect.minY : rect.maxY
+        let bottom = yAxisDown ? rect.maxY : rect.minY
+        switch handle {
+        case .topLeft: return CGPoint(x: rect.minX, y: top)
+        case .top: return CGPoint(x: rect.midX, y: top)
+        case .topRight: return CGPoint(x: rect.maxX, y: top)
+        case .right: return CGPoint(x: rect.maxX, y: rect.midY)
+        case .bottomRight: return CGPoint(x: rect.maxX, y: bottom)
+        case .bottom: return CGPoint(x: rect.midX, y: bottom)
+        case .bottomLeft: return CGPoint(x: rect.minX, y: bottom)
+        case .left: return CGPoint(x: rect.minX, y: rect.midY)
+        }
+    }
+
+    public static func oppositeAnchor(
+        for handle: ResizeHandlePosition,
+        in rect: CGRect,
+        yAxisDown: Bool
+    ) -> CGPoint {
+        let opposite: ResizeHandlePosition
+        switch handle {
+        case .topLeft: opposite = .bottomRight
+        case .top: opposite = .bottom
+        case .topRight: opposite = .bottomLeft
+        case .right: opposite = .left
+        case .bottomRight: opposite = .topLeft
+        case .bottom: opposite = .top
+        case .bottomLeft: opposite = .topRight
+        case .left: opposite = .right
+        }
+        return point(for: opposite, in: rect, yAxisDown: yAxisDown)
+    }
+
+    public static func rotateHandlePoint(for item: SnipAnnotationItem, yAxisDown: Bool) -> CGPoint {
+        let bounds = item.selectionBounds
+        return CGPoint(
+            x: bounds.midX,
+            y: yAxisDown ? bounds.minY - 24 : bounds.maxY + 24
+        )
+    }
+
+    public static func hitTestHandle(
+        at point: CGPoint,
+        for item: SnipAnnotationItem,
+        yAxisDown: Bool,
+        radius: CGFloat = 11
+    ) -> AnnotationTransformHandle? {
+        let rotatePoint = rotateHandlePoint(for: item, yAxisDown: yAxisDown)
+        if hypot(point.x - rotatePoint.x, point.y - rotatePoint.y) <= radius + 2 {
+            return .rotate
+        }
+        for handle in ResizeHandlePosition.allCases {
+            let handlePoint = Self.point(for: handle, in: item.selectionBounds, yAxisDown: yAxisDown)
+            if hypot(point.x - handlePoint.x, point.y - handlePoint.y) <= radius {
+                return .resize(handle)
+            }
+        }
+        return nil
     }
 }
 
@@ -184,6 +400,6 @@ public struct DetectedWindowInfo: Identifiable, Equatable {
     }
 }
 
-public enum ResizeHandlePosition: CaseIterable {
+public enum ResizeHandlePosition: CaseIterable, Equatable {
     case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
 }

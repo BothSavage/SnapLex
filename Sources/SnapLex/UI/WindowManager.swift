@@ -16,11 +16,24 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     private var pillPanel: BorderlessKeyablePanel?
     private var cardPanel: BorderlessKeyablePanel?
-    private var vocabWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var translationHistoryWindow: NSWindow?
+    private var screenshotHistoryWindow: NSWindow?
+    private var dashboardWindow: NSWindow?
 
     public private(set) var isSettingsPinned: Bool = false
     private var lastAnchorPoint: NSPoint = .zero
+
+    var hasVisibleUtilityWindow: Bool {
+        [pillPanel, cardPanel, settingsWindow, translationHistoryWindow, screenshotHistoryWindow, dashboardWindow]
+            .contains { $0?.isVisible == true }
+    }
+
+    public func ownsScreenPoint(_ point: NSPoint) -> Bool {
+        [pillPanel, cardPanel, settingsWindow, translationHistoryWindow, screenshotHistoryWindow, dashboardWindow]
+            .compactMap { $0 }
+            .contains { $0.isVisible && $0.frame.contains(point) }
+    }
 
     private override init() {
         super.init()
@@ -31,10 +44,11 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         // When user clicks "翻译" on the Snipaste Capture Toolbar
         SnipasteCaptureManager.shared.onOCRTranslateImage = { [weak self] image, screenRect in
             guard let self = self else { return }
+            ScreenshotHistoryStore.shared.save(image)
             self.lastAnchorPoint = CGPoint(x: screenRect.midX, y: screenRect.minY)
             Task { @MainActor in
                 let text = await VisionOCRService.shared.recognizeText(in: image)
-                let finalText = text.isEmpty ? "（未在截图中识别到文字）" : text
+                let finalText = text.isEmpty ? L10n.string("（未在截图中识别到文字）") : text
                 TranslatorViewModel.shared.startTranslation(
                     text: finalText,
                     mode: .translate,
@@ -49,6 +63,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         // When user clicks "提取文字" on the Snipaste Capture Toolbar
         SnipasteCaptureManager.shared.onOCRExtractText = { [weak self] image, screenRect in
             guard let self = self else { return }
+            ScreenshotHistoryStore.shared.save(image)
             self.lastAnchorPoint = CGPoint(x: screenRect.midX, y: screenRect.minY)
             Task { @MainActor in
                 let text = await VisionOCRService.shared.recognizeText(in: image)
@@ -111,7 +126,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     // MARK: - Stage 2: Show Translation Card
 
-    public func showTranslationCard(atSavedAnchor: Bool = false, nearMouse: Bool = true) {
+    public func showTranslationCard(atSavedAnchor: Bool = false, nearMouse: Bool = true, focusInput: Bool = false) {
         hidePillBar()
         if cardPanel == nil {
             createCardPanel()
@@ -141,8 +156,14 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         }
 
         card.level = .floating
-        card.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if focusInput {
+            card.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            // Reading a translation must not redirect typing away from the
+            // source app. The user can still click the card to edit its input.
+            card.orderFrontRegardless()
+        }
     }
 
     /// Dynamically updates `cardPanel` size when async translation or dictionary text arrives, keeping the top edge anchored.
@@ -183,6 +204,13 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         cardPanel?.orderOut(nil)
     }
 
+    func dismissVisibleUtilityWindow() {
+        [pillPanel, cardPanel, settingsWindow, dashboardWindow]
+            .compactMap { $0 }
+            .first(where: \.isVisible)?
+            .orderOut(nil)
+    }
+
     public func handleOutsideClick(at screenPoint: NSPoint) {
         if let pill = pillPanel, pill.isVisible {
             if !NSPointInRect(screenPoint, pill.frame) {
@@ -212,6 +240,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         panel.isOpaque = false
         panel.hasShadow = false
         panel.isMovableByWindowBackground = true
+        panel.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
 
         let view = SelectionPillBarView(
             onSelectAction: { [weak self] mode in
@@ -222,10 +251,6 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             onTriggerScreenshot: { [weak self] in
                 self?.hidePillBar()
                 self?.triggerScreenshotFlow()
-            },
-            onOpenVocabWindow: { [weak self] in
-                self?.hidePillBar()
-                self?.showVocabularyWindow()
             },
             onOpenSettingsWindow: { [weak self] in
                 self?.hidePillBar()
@@ -257,14 +282,12 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         panel.isOpaque = false
         panel.hasShadow = false
         panel.isMovableByWindowBackground = true
+        panel.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         panel.delegate = self
 
         let rootView = FloatingTranslatorView(
             onTriggerScreenshot: { [weak self] in
                 self?.triggerScreenshotFlow()
-            },
-            onOpenVocabWindow: { [weak self] in
-                self?.showVocabularyWindow()
             },
             onOpenSettingsWindow: { [weak self] in
                 self?.showSettingsWindow()
@@ -292,7 +315,20 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         if !TranslatorViewModel.shared.isPinned {
             cardPanel?.orderOut(nil)
         }
-        SnipasteCaptureManager.shared.startCapture()
+
+        // The dashboard is a normal app window, so the capture overlay would
+        // otherwise freeze it as part of the screenshot. Let WindowServer commit
+        // the hide before taking the desktop snapshot.
+        let dismissDashboardFirst = dashboardWindow?.isVisible == true
+        dashboardWindow?.orderOut(nil)
+
+        if dismissDashboardFirst {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                SnipasteCaptureManager.shared.startCapture()
+            }
+        } else {
+            SnipasteCaptureManager.shared.startCapture()
+        }
     }
 
     public func triggerPinFlow() {
@@ -302,23 +338,12 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         SnipastePinManager.shared.pinFromClipboard()
     }
 
-    public func showVocabularyWindow() {
-        if vocabWindow == nil {
-            let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 860, height: 560),
-                styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                backing: .buffered,
-                defer: false
-            )
-            win.title = "SnapLex 生词本"
-            win.center()
-            win.contentView = NSHostingView(rootView: VocabularyBookView())
-            win.isReleasedWhenClosed = false
-            self.vocabWindow = win
-        }
-        VocabularyStore.shared.reloadItems()
-        vocabWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    public func showTranslationHistoryWindow() {
+        showDashboard(section: .translations)
+    }
+
+    public func showScreenshotHistoryWindow() {
+        showDashboard(section: .screenshots)
     }
 
     public func setSettingsPinned(_ pinned: Bool) {
@@ -327,28 +352,49 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     }
 
     public func showSettingsWindow() {
-        if settingsWindow == nil {
+        showDashboard(section: .preferences)
+    }
+
+    public func showDashboard(section: DashboardSection = .home) {
+        DashboardNavigation.shared.select(section)
+        if dashboardWindow == nil {
             let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 560),
-                styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+                contentRect: NSRect(x: 0, y: 0, width: 1180, height: 820),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
             )
-            win.title = "SnapLex 偏好设置"
-            win.titleVisibility = .hidden
-            win.titlebarAppearsTransparent = true
-            win.isMovableByWindowBackground = true
-            win.minSize = NSSize(width: 500, height: 420)
-            win.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1.0)
-            win.appearance = NSAppearance(named: .darkAqua)
-            win.level = isSettingsPinned ? .floating : .normal
+            win.title = "SnapLex"
+            win.minSize = NSSize(width: 1080, height: 720)
             win.center()
-            win.contentView = NSHostingView(rootView: SettingsView())
+            win.backgroundColor = .windowBackgroundColor
+            win.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
+            win.contentView = NSHostingView(rootView: DashboardView())
             win.isReleasedWhenClosed = false
-            self.settingsWindow = win
+            win.delegate = self
+            dashboardWindow = win
         }
-        settingsWindow?.level = isSettingsPinned ? .floating : .normal
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        dashboardWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    public func hideDashboard() {
+        dashboardWindow?.orderOut(nil)
+    }
+
+    public func applyAppearance() {
+        let appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
+        [pillPanel, cardPanel, settingsWindow, translationHistoryWindow, screenshotHistoryWindow, dashboardWindow]
+            .forEach { $0?.appearance = appearance }
+        SnipasteCaptureManager.shared.applyAppearance(appearance)
+        SnipastePinManager.shared.applyAppearance(appearance)
+        ScrollingCaptureEngine.shared.applyAppearance(appearance)
+        ScreenRecorderManager.shared.applyAppearance(appearance)
+    }
+
+    public func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === dashboardWindow else { return true }
+        sender.orderOut(nil)
+        return false
     }
 }

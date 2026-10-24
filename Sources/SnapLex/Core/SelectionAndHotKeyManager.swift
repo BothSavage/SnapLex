@@ -36,12 +36,14 @@ public final class SelectionAndHotKeyManager: ObservableObject {
 
     private var hotKeyRefs: [EventHotKeyRef?] = []
     private var eventHandlerRef: EventHandlerRef?
+    private var directTranslationTask: Task<Void, Never>?
 
     // Mouse drag selection state
     private var globalMouseDownMonitor: Any?
     private var globalMouseUpMonitor: Any?
     private var mouseDownPoint: NSPoint = .zero
     private var mouseDownTime: TimeInterval = 0
+    private var mouseDownWasInsideSnapLexWindow = false
     private var lastAutoPopupText: String = ""
     private var lastAutoPopupTime: TimeInterval = 0
 
@@ -90,6 +92,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                 guard let self = self else { return }
                 self.mouseDownPoint = pt
                 self.mouseDownTime = now
+                self.mouseDownWasInsideSnapLexWindow = WindowManager.shared.ownsScreenPoint(pt)
                 self.onOutsideMouseDown?(pt)
             }
         }
@@ -101,9 +104,12 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 guard AppSettings.shared.enableMouseHoverBar else { return }
+                guard !self.mouseDownWasInsideSnapLexWindow,
+                      !WindowManager.shared.ownsScreenPoint(upPoint) else { return }
 
                 // Ignore clicks inside SnapLex itself
-                if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Bundle.main.bundleIdentifier {
+                guard let sourceApplication = NSWorkspace.shared.frontmostApplication,
+                      sourceApplication.bundleIdentifier != Bundle.main.bundleIdentifier else {
                     return
                 }
 
@@ -114,8 +120,19 @@ public final class SelectionAndHotKeyManager: ObservableObject {
 
                 guard isDragSelect || isMultiClickSelect else { return }
 
+                // Text editing and caret/selection gestures inside input controls
+                // must remain owned by the target app. Showing our pill there
+                // steals focus from search boxes, chat composers and editors.
+                guard !self.isEditableTextFocused(in: sourceApplication.processIdentifier) else { return }
+
                 let downPt = self.mouseDownPoint
                 try? await Task.sleep(nanoseconds: 75_000_000) // Wait 75ms for browser/app selection to settle
+
+                // Don't let an async AX read from the previous app open a pill
+                // after the user has already switched windows.
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == sourceApplication.processIdentifier else {
+                    return
+                }
 
                 if let selected = await self.extractSelectionAfterMouseUp(downPoint: downPt, upPoint: upPoint, isDrag: isDragSelect),
                    !selected.isEmpty,
@@ -140,22 +157,12 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     /// Tier 2: Hit-test element at mouse position via AXUIElementCopyElementAtPosition & read kAXSelectedTextAttribute
     /// Tier 3: Non-destructive synthetic Cmd+C fallback (captures selection in any web/PDF/canvas app when AX attribute isn't exposed)
     private func extractSelectionAfterMouseUp(downPoint: NSPoint, upPoint: NSPoint, isDrag: Bool) async -> String? {
-        guard isAccessibilityTrusted(prompt: false) else { return nil }
-
         if let frontApp = NSWorkspace.shared.frontmostApplication {
             enableChromiumAccessibility(pid: frontApp.processIdentifier)
         }
 
-        // Tier 1: Focused element AXSelectedText
-        if let axText = readSelectedTextViaAX()?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !axText.isEmpty {
-            return axText
-        }
-
-        // Tier 2: Element at mouse position AXSelectedText
-        if let hitText = readSelectedTextAtPosition(upPoint)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !hitText.isEmpty {
-            return hitText
+        if let selectedText = await readSelectedTextWithRetries(at: upPoint) {
+            return selectedText
         }
 
         // Tier 3: Synthetic Cmd+C fallback (works in 100% of browsers & apps even before Chrome finishes building its AX tree)
@@ -183,6 +190,29 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         AXUIElementSetAttributeValue(appElem, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
     }
 
+    /// Accessibility selection can lag the mouse-up event, especially on the first
+    /// interaction after an app becomes active. Retry focused and hit-tested AX
+    /// reads briefly before falling back to synthetic copy.
+    private func readSelectedTextWithRetries(at point: NSPoint?) async -> String? {
+        guard isAccessibilityTrusted(prompt: false) else { return nil }
+
+        for attempt in 0..<3 {
+            if let text = readSelectedTextViaAX()?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                return text
+            }
+            if let point,
+               let text = readSelectedTextAtPosition(point)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                return text
+            }
+            if attempt < 2 {
+                try? await Task.sleep(nanoseconds: 45_000_000)
+            }
+        }
+        return nil
+    }
+
     private func readSelectedTextAtPosition(_ cocoaPoint: NSPoint) -> String? {
         guard let mainScreenHeight = NSScreen.screens.first?.frame.height else { return nil }
         // Accessibility uses top-left screen origin
@@ -205,13 +235,51 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             }
             var parent: CFTypeRef?
             if AXUIElementCopyAttributeValue(target, kAXParentAttribute as CFString, &parent) == .success,
-               let p = parent {
-                current = (p as! AXUIElement)
+               let p = axElement(from: parent) {
+                current = p
             } else {
                 break
             }
         }
         return nil
+    }
+
+    private func isEditableTextFocused(in processIdentifier: pid_t) -> Bool {
+        let appElement = AXUIElementCreateApplication(processIdentifier)
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedValue
+        ) == .success, let focused = axElement(from: focusedValue) else {
+            return false
+        }
+
+        var current: AXUIElement? = focused
+        for _ in 0..<8 {
+            guard let element = current else { break }
+
+            var roleValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
+               let role = roleValue as? String,
+               ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXSecureTextField", "AXTextEntryArea"].contains(role) {
+                return true
+            }
+
+            var editableAncestor: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, "AXEditableAncestor" as CFString, &editableAncestor) == .success,
+               axElement(from: editableAncestor) != nil {
+                return true
+            }
+
+            var parentValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parentValue) == .success,
+                  let parent = axElement(from: parentValue) else {
+                break
+            }
+            current = parent
+        }
+        return false
     }
 
     // MARK: - Grab Selected Text for Hotkey Option+A
@@ -223,9 +291,9 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             enableChromiumAccessibility(pid: pid)
         }
 
-        if let axText = readSelectedTextViaAX(), !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let axText = await readSelectedTextWithRetries(at: NSEvent.mouseLocation) {
             return SelectedTextPayload(
-                text: axText.trimmingCharacters(in: .whitespacesAndNewlines),
+                text: axText,
                 sourceApp: appName,
                 trigger: .selection
             )
@@ -248,11 +316,6 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             ignoreNextChangeCount = false
         }
 
-        if let clip = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !clip.isEmpty {
-            return SelectedTextPayload(text: clip, sourceApp: appName, trigger: .selection)
-        }
-
         return nil
     }
 
@@ -261,9 +324,9 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             let appElem = AXUIElementCreateApplication(frontApp.processIdentifier)
             var focusedInApp: CFTypeRef?
             if AXUIElementCopyAttributeValue(appElem, kAXFocusedUIElementAttribute as CFString, &focusedInApp) == .success,
-               let element = focusedInApp {
+               let element = axElement(from: focusedInApp) {
                 var selectedText: CFTypeRef?
-                if AXUIElementCopyAttributeValue(element as! AXUIElement, kAXSelectedTextAttribute as CFString, &selectedText) == .success,
+                if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedText) == .success,
                    let str = selectedText as? String,
                    !str.isEmpty {
                     return str
@@ -274,14 +337,19 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedElement: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedElement)
-        guard err == .success, let element = focusedElement else { return nil }
+        guard err == .success, let element = axElement(from: focusedElement) else { return nil }
 
         var selectedText: CFTypeRef?
-        let textErr = AXUIElementCopyAttributeValue(element as! AXUIElement, kAXSelectedTextAttribute as CFString, &selectedText)
+        let textErr = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedText)
         if textErr == .success, let str = selectedText as? String {
             return str
         }
         return nil
+    }
+
+    private func axElement(from value: CFTypeRef?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return value as! AXUIElement
     }
 
     private func simulateCmdC() {
@@ -332,6 +400,12 @@ public final class SelectionAndHotKeyManager: ObservableObject {
 
         if delta <= 0.60 && str == lastCopiedString {
             lastCopyTimestamp = 0
+            guard let frontmost = NSWorkspace.shared.frontmostApplication,
+                  frontmost.bundleIdentifier != Bundle.main.bundleIdentifier,
+                  !WindowManager.shared.ownsScreenPoint(NSEvent.mouseLocation),
+                  !isEditableTextFocused(in: frontmost.processIdentifier) else {
+                return
+            }
             let appName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "macOS"
             onShowSelectionPopup?(SelectedTextPayload(text: str, sourceApp: appName, trigger: .doubleCopy))
         } else {
@@ -343,70 +417,81 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     // MARK: - Carbon Global HotKeys (Option+A, Option+S, Option+D)
 
     private func registerCarbonHotKeys() {
+        unregisterCarbonHotKeys()
+
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
         )
 
-        let handler: EventHandlerUPP = { _, eventRef, _ -> OSStatus in
-            guard let eventRef = eventRef else { return noErr }
-            var hotKeyID = EventHotKeyID()
-            let status = GetEventParameter(
-                eventRef,
-                EventParamName(kEventParamDirectObject),
-                EventParamType(typeEventHotKeyID),
-                nil,
-                MemoryLayout<EventHotKeyID>.size,
-                nil,
-                &hotKeyID
-            )
-            if status == noErr {
-                let id = hotKeyID.id
-                Task { @MainActor in
-                    SelectionAndHotKeyManager.shared.handleHotKey(id: id)
+        if eventHandlerRef == nil {
+            let handler: EventHandlerUPP = { _, eventRef, _ -> OSStatus in
+                guard let eventRef = eventRef else { return noErr }
+                var hotKeyID = EventHotKeyID()
+                let status = GetEventParameter(
+                    eventRef,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyID
+                )
+                if status == noErr {
+                    let id = hotKeyID.id
+                    Task { @MainActor in
+                        SelectionAndHotKeyManager.shared.handleHotKey(id: id)
+                    }
                 }
+                return noErr
             }
-            return noErr
+
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                handler,
+                1,
+                &eventType,
+                nil,
+                &eventHandlerRef
+            )
         }
 
-        InstallEventHandler(
-            GetApplicationEventTarget(),
-            handler,
-            1,
-            &eventType,
-            nil,
-            &eventHandlerRef
-        )
-
-                let signature = OSType(0x534C_4558)
-        // 1: Option + A (Selection Translate)
-        registerSingleHotKey(id: 1, signature: signature, keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(optionKey))
-        // 2: Option + S (Snipaste Capture + OCR Translate)
-        registerSingleHotKey(id: 2, signature: signature, keyCode: UInt32(kVK_ANSI_S), modifiers: UInt32(optionKey))
-        // 3: Option + D (Open Translation Card)
-        registerSingleHotKey(id: 3, signature: signature, keyCode: UInt32(kVK_ANSI_D), modifiers: UInt32(optionKey))
-        // 4: F1 (Snipaste Classic Capture Shortcut)
-        registerSingleHotKey(id: 4, signature: signature, keyCode: UInt32(kVK_F1), modifiers: 0)
-        // 5: F3 (Snipaste Classic Pin-to-Screen Shortcut)
-        registerSingleHotKey(id: 5, signature: signature, keyCode: UInt32(kVK_F3), modifiers: 0)
-        // 6: Option + P (Mac-friendly Pin-to-Screen Shortcut when Fn keys are media keys)
-        registerSingleHotKey(id: 6, signature: signature, keyCode: UInt32(kVK_ANSI_P), modifiers: UInt32(optionKey))
-        // 7: Shift + F3 (Restore last closed Pin window)
-        registerSingleHotKey(id: 7, signature: signature, keyCode: UInt32(kVK_F3), modifiers: UInt32(shiftKey))
-        // 8: Option + X (Unlock all Click-Through Pin windows)
-        registerSingleHotKey(id: 8, signature: signature, keyCode: UInt32(kVK_ANSI_X), modifiers: UInt32(optionKey))
-        // 9: Option + R (Open Screen Recorder Assistant 录屏助手)
-        registerSingleHotKey(id: 9, signature: signature, keyCode: UInt32(kVK_ANSI_R), modifiers: UInt32(optionKey))
-        // 10: F10 (Stop Screen Recording & Export GIF/MP4)
-        registerSingleHotKey(id: 10, signature: signature, keyCode: UInt32(kVK_F10), modifiers: 0)
+        let signature = OSType(0x534C_4558)
+        for shortcut in GlobalShortcut.allCases where shortcut.isGlobal {
+            guard let eventID = shortcut.eventID else { continue }
+            registerSingleHotKey(
+                id: eventID,
+                signature: signature,
+                binding: AppSettings.shared.shortcutBinding(for: shortcut)
+            )
+        }
     }
 
-    private func registerSingleHotKey(id: UInt32, signature: OSType, keyCode: UInt32, modifiers: UInt32) {
+    public func refreshHotKeys() {
+        guard eventHandlerRef != nil else { return }
+        registerCarbonHotKeys()
+    }
+
+    private func unregisterCarbonHotKeys() {
+        for hotKey in hotKeyRefs {
+            if let hotKey { UnregisterEventHotKey(hotKey) }
+        }
+        hotKeyRefs.removeAll()
+    }
+
+    private func registerSingleHotKey(id: UInt32, signature: OSType, binding: ShortcutBinding) {
+        guard !binding.isReservedForTextEditing else { return }
         let hotKeyID = EventHotKeyID(signature: signature, id: id)
         var ref: EventHotKeyRef?
+        let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
+        var carbonModifiers: UInt32 = 0
+        if flags.contains(.command) { carbonModifiers |= UInt32(cmdKey) }
+        if flags.contains(.option) { carbonModifiers |= UInt32(optionKey) }
+        if flags.contains(.shift) { carbonModifiers |= UInt32(shiftKey) }
+        if flags.contains(.control) { carbonModifiers |= UInt32(controlKey) }
         let status = RegisterEventHotKey(
-            keyCode,
-            modifiers,
+            UInt32(binding.keyCode),
+            carbonModifiers,
             hotKeyID,
             GetApplicationEventTarget(),
             0,
@@ -418,14 +503,21 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     }
 
     private func handleHotKey(id: UInt32) {
+        guard !ShortcutRecorderController.shared.isCapturing else { return }
         switch id {
         case 1:
-            Task {
-                if let payload = await grabCurrentSelection() {
-                    onTriggerDirectTranslateCard?(payload)
-                } else {
-                    onTriggerManualPanel?()
-                }
+            // Synthetic Cmd+C must never re-enter selection translation. Keep
+            // only one extraction pending, and don't show a stale/empty card
+            // when there is no current selection.
+            guard !ignoreNextChangeCount, directTranslationTask == nil else { return }
+            let sourcePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            directTranslationTask = Task { [weak self] in
+                guard let self else { return }
+                defer { self.directTranslationTask = nil }
+                guard let payload = await self.grabCurrentSelection(),
+                      !Task.isCancelled,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == sourcePID else { return }
+                self.onTriggerDirectTranslateCard?(payload)
             }
         case 2, 4:
             onTriggerScreenshot?()

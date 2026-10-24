@@ -13,7 +13,9 @@ public final class ScrollingCaptureEngine: ObservableObject {
     @Published public var stitchedFrameCount: Int = 0
     @Published public var isAutoScrolling: Bool = false
     @Published public var lastScrollWasUpward: Bool = false
-    @Published public var statusHint: String = "在选框内向上或向下滚动，或点「自动滚动」(Esc 停止)"
+    @Published public var statusHint: String = L10n.string("在选框内向上或向下滚动，或点「自动滚动」(Esc 停止)")
+
+    public private(set) var isCaptureActive: Bool = false
 
     private var targetScreenRect: CGRect = .zero
     private var targetQuartzRect: CGRect = .zero
@@ -55,6 +57,11 @@ public final class ScrollingCaptureEngine: ObservableObject {
 
     private init() {}
 
+    public func applyAppearance(_ appearance: NSAppearance?) {
+        frameBorderWindow?.appearance = appearance
+        controlPanelWindow?.appearance = appearance
+    }
+
     public func startScrollingCapture(screenRect: CGRect) {
         stopTimersAndWindows()
 
@@ -84,7 +91,8 @@ public final class ScrollingCaptureEngine: ObservableObject {
         self.stitchedFrameCount = 0
         self.isAutoScrolling = false
         self.lastScrollWasUpward = false
-        self.statusHint = "在选框内向上/向下滚动，或点「自动滚动」(Esc 停止 / Enter 完成)"
+        self.statusHint = L10n.string("在选框内向上/向下滚动，或点「自动滚动」(Esc 停止 / Enter 完成)")
+        self.isCaptureActive = true
 
         activateUnderlyingWindowOwner(in: targetQuartzRect)
 
@@ -124,14 +132,10 @@ public final class ScrollingCaptureEngine: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 if event.keyCode == 53 { // Esc
-                    if self.isAutoScrolling {
-                        self.stopAutoScroll(reason: "已暂停自动滚动，点「完成」或继续手动滚动")
-                    } else {
-                        self.cancelScrollingCapture()
-                    }
+                    self.cancelScrollingCapture()
                 } else if event.keyCode == 49 { // Space -> Pause auto-scroll
                     if self.isAutoScrolling {
-                        self.stopAutoScroll(reason: "已暂停自动滚动")
+                        self.stopAutoScroll(reason: L10n.string("已暂停自动滚动"))
                     }
                 } else if event.keyCode == 36 || event.keyCode == 76 { // Return / Enter -> Finish
                     self.finishScrollingCapture()
@@ -150,7 +154,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
                 guard let self = self, self.isAutoScrolling else { return }
                 let now = ProcessInfo.processInfo.systemUptime
                 if now - self.autoScrollStartedAt > 0.35 {
-                    self.stopAutoScroll(reason: "已暂停自动滚动")
+                        self.stopAutoScroll(reason: L10n.string("已暂停自动滚动"))
                 }
             }
         }
@@ -188,7 +192,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
 
     public func toggleAutoScroll() {
         if isAutoScrolling {
-            stopAutoScroll(reason: "已暂停自动滚动")
+            stopAutoScroll(reason: L10n.string("已暂停自动滚动"))
         } else {
             startAutoScroll()
         }
@@ -197,7 +201,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
     private func startAutoScroll() {
         isAutoScrolling = true
         autoScrollStartedAt = ProcessInfo.processInfo.systemUptime
-        statusHint = "自动滚动拼接中... (移出选框或按 Esc 停止)"
+        statusHint = L10n.string("自动滚动拼接中... (移出选框或按 Esc 停止)")
 
         activateUnderlyingWindowOwner(in: targetQuartzRect)
         let centerQuartz = CGPoint(x: targetQuartzRect.midX, y: targetQuartzRect.midY)
@@ -215,7 +219,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
                 if now - self.autoScrollStartedAt > 0.75 {
                     let currentMouse = NSEvent.mouseLocation
                     if !self.targetScreenRect.insetBy(dx: -28, dy: -28).contains(currentMouse) {
-                        self.stopAutoScroll(reason: "鼠标移出选框，已停止自动滚动")
+                        self.stopAutoScroll(reason: L10n.string("鼠标移出选框，已停止自动滚动"))
                         return
                     }
                 }
@@ -239,6 +243,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
         stopTimersAndWindows()
 
         guard let img = finalImg else { return }
+        ScreenshotHistoryStore.shared.save(img)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([img])
 
@@ -263,6 +268,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
     }
 
     private func stopTimersAndWindows() {
+        isCaptureActive = false
         isAutoScrolling = false
         capturePollingTimer?.invalidate()
         capturePollingTimer = nil
@@ -346,7 +352,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
                 stitchedPixelHeight = stitched.height
                 stitchedFrameCount += 1
                 updatePreviewImage(from: stitched)
-                statusHint = "向下拼接 · 第 \(stitchedFrameCount) 段 (\(stitched.height) px)"
+                statusHint = L10n.format("向下拼接 · 第 %d 段 (%d px)", stitchedFrameCount, stitched.height)
             }
         } else if newViewportTop < 0 {
             // Case 2: Viewport extended past the TOP of `master` (scrolling up!)
@@ -363,7 +369,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
                 stitchedPixelHeight = stitched.height
                 stitchedFrameCount += 1
                 updatePreviewImage(from: stitched)
-                statusHint = "向上拼接 · 第 \(stitchedFrameCount) 段 (\(stitched.height) px)"
+                statusHint = L10n.format("向上拼接 · 第 %d 段 (%d px)", stitchedFrameCount, stitched.height)
             }
         } else {
             // Case 3: Viewport moved within already-captured territory of `master` -> track position without duplicating!
@@ -729,6 +735,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
         win.backgroundColor = .clear
         win.isOpaque = false
         win.hasShadow = true
+        win.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         win.ignoresMouseEvents = true
         win.sharingType = .none
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -769,6 +776,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
+        panel.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         panel.sharingType = .none
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -782,27 +790,28 @@ public final class ScrollingCaptureEngine: ObservableObject {
 
 private struct ScrollingCaptureHUDView: View {
     @ObservedObject var engine: ScrollingCaptureEngine
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 10) {
             HStack {
                 Image(systemName: "arrow.up.and.down.text.horizontal")
-                    .foregroundStyle(.white)
-                Text("长截图实时预览")
+                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
+                Text(L10n.string("长截图实时预览"))
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                     .fixedSize()
                 Spacer()
-                Text("\(engine.stitchedFrameCount) 段")
+                Text(L10n.format("%d 段", engine.stitchedFrameCount))
                     .font(.system(size: 11.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                     .fixedSize()
             }
 
             HStack(spacing: 8) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.black.opacity(0.55))
+                        .fill(Color.primary.opacity(0.055))
 
                     if let img = engine.previewImage {
                         ScrollViewReader { proxy in
@@ -832,21 +841,21 @@ private struct ScrollingCaptureHUDView: View {
                             }
                         }
                     } else {
-                        Text("等待画面捕获...")
+                        Text(L10n.string("等待画面捕获..."))
                             .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.5))
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity)
 
                 if let img = engine.previewImage {
                     VStack(spacing: 4) {
-                        Text("全览")
+                        Text(L10n.string("全览"))
                             .font(.system(size: 9.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.55))
+                            .foregroundStyle(.secondary)
                         ZStack {
                             RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.black.opacity(0.55))
+                                .fill(Color.primary.opacity(0.055))
                             Image(nsImage: img)
                                 .resizable()
                                 .scaledToFit()
@@ -860,7 +869,7 @@ private struct ScrollingCaptureHUDView: View {
 
             Text(engine.statusHint)
                 .font(.system(size: 10.5))
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(Color.primary.opacity(0.85))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .frame(minHeight: 28)
@@ -870,19 +879,19 @@ private struct ScrollingCaptureHUDView: View {
                     HStack(spacing: 4) {
                         Image(systemName: engine.isAutoScrolling ? "pause.fill" : "play.fill")
                             .font(.system(size: 11))
-                        Text(engine.isAutoScrolling ? "停止滚动" : "自动滚动")
+                        Text(L10n.string(engine.isAutoScrolling ? "停止滚动" : "自动滚动"))
                             .font(.system(size: 11.5, weight: .semibold))
                             .fixedSize()
                     }
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 7)
                     .background(
                         RoundedRectangle(cornerRadius: 7)
-                            .fill(engine.isAutoScrolling ? Color.white.opacity(0.28) : Color.white.opacity(0.14))
+                            .fill(engine.isAutoScrolling ? SnapLexTheme.toolbarSelection(for: colorScheme) : Color.primary.opacity(0.08))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 7)
-                                    .strokeBorder(engine.isAutoScrolling ? Color.white : Color.clear, lineWidth: 1)
+                                    .strokeBorder(engine.isAutoScrolling ? SnapLexTheme.toolbarForeground(for: colorScheme) : Color.clear, lineWidth: 1)
                             )
                     )
                 }
@@ -891,9 +900,9 @@ private struct ScrollingCaptureHUDView: View {
                 Button(action: { engine.cancelScrollingCapture() }) {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(Color.primary.opacity(0.85))
                         .frame(width: 32, height: 30)
-                        .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.12)))
+                        .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.07)))
                 }
                 .buttonStyle(.plain)
 
@@ -901,14 +910,14 @@ private struct ScrollingCaptureHUDView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark")
                             .font(.system(size: 11.5, weight: .bold))
-                        Text("完成")
+                        Text(L10n.string("完成"))
                             .font(.system(size: 12, weight: .bold))
                             .fixedSize()
                     }
-                    .foregroundStyle(.black)
+                    .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.white))
+                    .background(RoundedRectangle(cornerRadius: 7).fill(SnapLexTheme.toolbarForeground(for: colorScheme)))
                 }
                 .buttonStyle(.plain)
             }
@@ -916,11 +925,12 @@ private struct ScrollingCaptureHUDView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(white: 0.10, opacity: 0.96))
+                .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                        .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1)
                 )
         )
+        .snapLexAppearance()
     }
 }

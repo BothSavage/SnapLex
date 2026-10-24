@@ -37,86 +37,8 @@ public enum RecordingExportFormat: String, CaseIterable, Identifiable {
     }
 }
 
-private struct TimedRecordingFrame {
-    let image: CGImage
-    let timestampSeconds: Double
-}
-
-/// Thread-safe snapshot of overlay state read by the 30 FPS background capture queue
-private final class RecordingOverlayStateBox: @unchecked Sendable {
-    private let lock = NSLock()
-    var isPaused: Bool = false
-    var recordMouseCursor: Bool = true
-    var recordMouseClick: Bool = true
-    var recordKeystrokes: Bool = true
-    var targetScreenRect: CGRect = .zero
-    var targetQuartzRect: CGRect = .zero
-    var lastClickTime: TimeInterval = 0
-    var lastKeyLabel: String?
-    var lastKeyTime: TimeInterval = 0
-
-    func updateConfig(
-        isPaused: Bool,
-        recordMouseCursor: Bool,
-        recordMouseClick: Bool,
-        recordKeystrokes: Bool,
-        targetScreenRect: CGRect,
-        targetQuartzRect: CGRect
-    ) {
-        lock.lock()
-        self.isPaused = isPaused
-        self.recordMouseCursor = recordMouseCursor
-        self.recordMouseClick = recordMouseClick
-        self.recordKeystrokes = recordKeystrokes
-        self.targetScreenRect = targetScreenRect
-        self.targetQuartzRect = targetQuartzRect
-        lock.unlock()
-    }
-
-    func setPaused(_ paused: Bool) {
-        lock.lock()
-        self.isPaused = paused
-        lock.unlock()
-    }
-
-    func recordClick(at time: TimeInterval) {
-        lock.lock()
-        self.lastClickTime = time
-        lock.unlock()
-    }
-
-    func recordKey(_ label: String, at time: TimeInterval) {
-        lock.lock()
-        self.lastKeyLabel = label
-        self.lastKeyTime = time
-        lock.unlock()
-    }
-
-    func snapshot() -> (
-        isPaused: Bool,
-        recordMouseCursor: Bool,
-        recordMouseClick: Bool,
-        recordKeystrokes: Bool,
-        targetScreenRect: CGRect,
-        targetQuartzRect: CGRect,
-        lastClickTime: TimeInterval,
-        lastKeyLabel: String?,
-        lastKeyTime: TimeInterval
-    ) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (
-            isPaused,
-            recordMouseCursor,
-            recordMouseClick,
-            recordKeystrokes,
-            targetScreenRect,
-            targetQuartzRect,
-            lastClickTime,
-            lastKeyLabel,
-            lastKeyTime
-        )
-    }
+public extension RecordingTargetMode {
+    var localizedLabel: String { L10n.string(rawValue) }
 }
 
 @MainActor
@@ -145,39 +67,23 @@ public final class ScreenRecorderManager: ObservableObject {
 
     private var recordingBarWindow: NSPanel?
     private var regionBorderWindow: NSWindow?
+    private var errorToastPanel: NSPanel?
+    private var errorToastTask: Task<Void, Never>?
 
-    private let captureQueue = DispatchQueue(label: "com.snaplex.recorder.capture30fps", qos: .userInteractive)
-    private var captureDispatchTimer: DispatchSourceTimer?
     private var clockTimer: Timer?
-    private let overlayStateBox = RecordingOverlayStateBox()
+    private var pipeline: ScreenCaptureRecordingPipeline?
 
-    // High-speed 30 FPS timed frames + 15 FPS GIF frames
-    private var timedFrames: [TimedRecordingFrame] = []
-    private var recordingStartUptime: TimeInterval = 0
-    private var accumulatedPausedSeconds: TimeInterval = 0
-    private var pauseBeganUptime: TimeInterval?
-
-    private var targetQuartzRect: CGRect = .zero
     private var targetScreenRect: CGRect = .zero
 
-    private var mouseMonitor: Any?
     private var keyMonitor: Any?
 
-    private typealias CGWindowListCreateImageFunc = @convention(c) (
-        CGRect,
-        CGWindowListOption,
-        CGWindowID,
-        CGWindowImageOption
-    ) -> Unmanaged<CGImage>?
-
-    private nonisolated static let windowListCreateImageFn: CGWindowListCreateImageFunc? = {
-        guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else {
-            return nil
-        }
-        return unsafeBitCast(sym, to: CGWindowListCreateImageFunc.self)
-    }()
-
     private init() {}
+
+    public func applyAppearance(_ appearance: NSAppearance?) {
+        recordingBarWindow?.appearance = appearance
+        regionBorderWindow?.appearance = appearance
+        errorToastPanel?.appearance = appearance
+    }
 
     /// Opens the unified F1 capture overlay with the Screen Recording Sub-Toolbar pre-selected!
     public func showAssistant(initialRegion: CGRect? = nil) {
@@ -186,14 +92,7 @@ public final class ScreenRecorderManager: ObservableObject {
 
     /// Starts recording the specified `screenRect` directly from the screenshot sub-toolbar!
     public func startRecording(screenRect: CGRect) {
-        let primaryH = NSScreen.screens.first?.frame.height ?? 900
         self.targetScreenRect = screenRect
-        self.targetQuartzRect = CGRect(
-            x: screenRect.minX,
-            y: primaryH - screenRect.maxY,
-            width: max(32, screenRect.width),
-            height: max(32, screenRect.height)
-        )
 
         showRegionGuideBorder(around: screenRect)
         showFloatingRecordingBar(near: screenRect)
@@ -219,55 +118,48 @@ public final class ScreenRecorderManager: ObservableObject {
     }
 
     private func startActualRecordingLoop() {
-        timedFrames.removeAll()
         elapsedSeconds = 0
         capturedFrameCount = 0
         isPaused = false
         isRecording = true
-        recordingStartUptime = ProcessInfo.processInfo.systemUptime
-        accumulatedPausedSeconds = 0
-        pauseBeganUptime = nil
-
-        overlayStateBox.updateConfig(
-            isPaused: false,
-            recordMouseCursor: recordMouseCursor,
-            recordMouseClick: recordMouseClick,
-            recordKeystrokes: recordKeystrokes,
-            targetScreenRect: targetScreenRect,
-            targetQuartzRect: targetQuartzRect
-        )
-
         resizeFloatingRecordingBarToFit()
-        installInputOverlayMonitors()
-
-        // High-precision 30 FPS (33.33ms) background capture timer on `.userInteractive` queue!
-        captureDispatchTimer?.cancel()
-        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: captureQueue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(33), leeway: .milliseconds(2))
-
-        let stateBox = self.overlayStateBox
-        timer.setEventHandler { [weak self] in
-            guard let frameImg = Self.captureAndCompositeOnBackground(stateBox: stateBox) else { return }
-            let now = ProcessInfo.processInfo.systemUptime
-            Task { @MainActor [weak self] in
-                guard let self = self, self.isRecording, !self.isPaused else { return }
-                let timestamp = max(0, now - self.recordingStartUptime - self.accumulatedPausedSeconds)
-                self.timedFrames.append(TimedRecordingFrame(image: frameImg, timestampSeconds: timestamp))
-                self.capturedFrameCount = self.timedFrames.count
-                // Cap at 5400 frames (3 minutes @ 30 FPS)
-                if self.timedFrames.count >= 5400 {
-                    self.stopRecordingAndPromptSave()
-                }
-            }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnapLex-Recording-\(UUID().uuidString)")
+            .appendingPathExtension("mp4")
+        let pipeline = ScreenCaptureRecordingPipeline(
+            screenRect: targetScreenRect,
+            recordSpeaker: recordSpeaker,
+            recordMicrophone: recordMicrophone,
+            recordCursor: recordMouseCursor,
+            recordClick: recordMouseClick,
+            recordKeystrokes: recordKeystrokes,
+            outputURL: url
+        )
+        pipeline.onVideoFrame = { [weak self] in
+            Task { @MainActor in self?.capturedFrameCount += 1 }
         }
-        timer.resume()
-        self.captureDispatchTimer = timer
+        pipeline.onFailure = { [weak self] message in
+            Task { @MainActor in self?.recordingFailed(message) }
+        }
+        self.pipeline = pipeline
 
-        clockTimer?.invalidate()
-        clockTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self, self.isRecording, !self.isPaused else { return }
-                self.elapsedSeconds += 1
+        Task { @MainActor in
+            do {
+                try await pipeline.start()
+                guard self.pipeline === pipeline, self.isRecording else {
+                    await pipeline.cancel()
+                    return
+                }
+                self.installInputOverlayMonitors()
+                self.clockTimer?.invalidate()
+                self.clockTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                    Task { @MainActor in
+                        guard let self, self.isRecording, !self.isPaused else { return }
+                        self.elapsedSeconds += 1
+                    }
+                }
+            } catch {
+                self.recordingFailed(self.localizedRecordingError(error))
             }
         }
     }
@@ -275,15 +167,21 @@ public final class ScreenRecorderManager: ObservableObject {
     public func togglePauseRecording() {
         guard isRecording else { return }
         isPaused.toggle()
-        overlayStateBox.setPaused(isPaused)
-        let now = ProcessInfo.processInfo.systemUptime
-        if isPaused {
-            pauseBeganUptime = now
-        } else if let began = pauseBeganUptime {
-            accumulatedPausedSeconds += (now - began)
-            pauseBeganUptime = nil
-        }
+        pipeline?.setPaused(isPaused)
         resizeFloatingRecordingBarToFit()
+    }
+
+    public func dismissForEscape() {
+        if isCountingDown {
+            isCountingDown = false
+            cleanupRecordingWindows()
+            return
+        }
+        if isRecording {
+            stopRecordingAndPromptSave()
+        } else {
+            cleanupRecordingWindows()
+        }
     }
 
     /// Take a screenshot at ANY time while recording without stopping the recording!
@@ -298,15 +196,88 @@ public final class ScreenRecorderManager: ObservableObject {
             return
         }
         isRecording = false
-        captureDispatchTimer?.cancel()
-        captureDispatchTimer = nil
         clockTimer?.invalidate()
         clockTimer = nil
         removeInputOverlayMonitors()
         cleanupRecordingWindows()
+        guard let pipeline else { return }
+        self.pipeline = nil
+        Task { @MainActor in
+            do {
+                try await pipeline.stop()
+                self.promptExportDialog(recordingURL: pipeline.outputURL)
+            } catch {
+                try? FileManager.default.removeItem(at: pipeline.outputURL)
+                self.showRecordingError(L10n.string("无法保存录屏文件，请检查存储空间后重试。"))
+            }
+        }
+    }
 
-        guard !timedFrames.isEmpty else { return }
-        promptExportDialog(timedFrames: timedFrames)
+    private func recordingFailed(_ message: String) {
+        guard isRecording || isCountingDown else { return }
+        isCountingDown = false
+        isRecording = false
+        isPaused = false
+        clockTimer?.invalidate()
+        clockTimer = nil
+        removeInputOverlayMonitors()
+        cleanupRecordingWindows()
+        let failedPipeline = pipeline
+        pipeline = nil
+        Task {
+            await failedPipeline?.cancel()
+            if let failedPipeline { try? FileManager.default.removeItem(at: failedPipeline.outputURL) }
+        }
+        showRecordingError(message)
+    }
+
+    private func localizedRecordingError(_ error: Error) -> String {
+        (error as? ScreenCaptureRecordingError)?.errorDescription
+            ?? L10n.string("录屏过程中发生错误，请重试。")
+    }
+
+    private func showRecordingError(_ message: String) {
+        errorToastTask?.cancel()
+        errorToastPanel?.orderOut(nil)
+
+        let screen = NSScreen.screens.first(where: { $0.frame.intersects(targetScreenRect) }) ?? NSScreen.main
+        let screenFrame = screen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let anchor = targetScreenRect.width > 0 && targetScreenRect.height > 0
+            ? targetScreenRect.intersection(screenFrame)
+            : screen?.visibleFrame ?? screenFrame
+        let width = min(360, max(220, anchor.width - 16))
+        let size = NSSize(width: width, height: 62)
+
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .popUpMenu
+        panel.isFloatingPanel = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
+        panel.ignoresMouseEvents = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.contentView = NSHostingView(rootView: RecordingErrorToastView(message: message))
+
+        let x = max(screenFrame.minX + 8, min(anchor.midX - size.width / 2, screenFrame.maxX - size.width - 8))
+        let y = max(screenFrame.minY + 8, min(anchor.minY + 10, screenFrame.maxY - size.height - 8))
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.orderFrontRegardless()
+        errorToastPanel = panel
+
+        errorToastTask = Task { @MainActor [weak self, weak panel] in
+            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            guard !Task.isCancelled else { return }
+            panel?.orderOut(nil)
+            if self?.errorToastPanel === panel {
+                self?.errorToastPanel = nil
+            }
+        }
     }
 
     private func cleanupRecordingWindows() {
@@ -316,104 +287,9 @@ public final class ScreenRecorderManager: ObservableObject {
         regionBorderWindow = nil
     }
 
-    // MARK: - 30 FPS Pure CoreGraphics Background Capture & Overlay Compositing
-
-    private nonisolated static func captureAndCompositeOnBackground(stateBox: RecordingOverlayStateBox) -> CGImage? {
-        let state = stateBox.snapshot()
-        guard !state.isPaused else { return nil }
-        guard let fn = windowListCreateImageFn,
-              let rawCG = fn(state.targetQuartzRect, .optionOnScreenOnly, kCGNullWindowID, .nominalResolution)?.takeRetainedValue() else {
-            return nil
-        }
-
-        let w = rawCG.width
-        let h = rawCG.height
-        guard state.recordMouseCursor || state.recordMouseClick || state.recordKeystrokes else {
-            return rawCG
-        }
-
-        let colorSpace = rawCG.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: nil,
-            width: w,
-            height: h,
-            bitsPerComponent: 8,
-            bytesPerRow: w * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return rawCG
-        }
-
-        ctx.draw(rawCG, in: CGRect(x: 0, y: 0, width: w, height: h))
-
-        let scaleX = CGFloat(w) / max(1, state.targetScreenRect.width)
-        let scaleY = CGFloat(h) / max(1, state.targetScreenRect.height)
-        let now = ProcessInfo.processInfo.systemUptime
-
-        let mouseScreen = NSEvent.mouseLocation
-        if state.targetScreenRect.contains(mouseScreen) {
-            let localX = (mouseScreen.x - state.targetScreenRect.minX) * scaleX
-            let localY = (mouseScreen.y - state.targetScreenRect.minY) * scaleY
-
-            if state.recordMouseClick, now - state.lastClickTime < 0.38 {
-                let progress = CGFloat((now - state.lastClickTime) / 0.38)
-                let radius = (12.0 + progress * 22.0) * scaleX
-                let alpha = max(0.0, 0.78 * (1.0 - progress))
-                ctx.setStrokeColor(CGColor(srgbRed: 1.0, green: 0.32, blue: 0.25, alpha: alpha))
-                ctx.setLineWidth(3.0 * scaleX)
-                ctx.strokeEllipse(in: CGRect(x: localX - radius, y: localY - radius, width: radius * 2, height: radius * 2))
-            }
-
-            if state.recordMouseCursor {
-                let r = 6.0 * scaleX
-                ctx.setFillColor(CGColor(gray: 1.0, alpha: 0.95))
-                ctx.fillEllipse(in: CGRect(x: localX - r, y: localY - r, width: r * 2, height: r * 2))
-                ctx.setStrokeColor(CGColor(gray: 0.0, alpha: 0.85))
-                ctx.setLineWidth(1.8 * scaleX)
-                ctx.strokeEllipse(in: CGRect(x: localX - r, y: localY - r, width: r * 2, height: r * 2))
-            }
-        }
-
-        if state.recordKeystrokes, let keyStr = state.lastKeyLabel, now - state.lastKeyTime < 1.1 {
-            let font = CTFontCreateWithName("Menlo-Bold" as CFString, 15.0 * scaleX, nil)
-            let attrs: [CFString: Any] = [
-                kCTFontAttributeName: font,
-                kCTForegroundColorAttributeName: CGColor(gray: 1.0, alpha: 1.0)
-            ]
-            if let attrStr = CFAttributedStringCreate(nil, keyStr as CFString, attrs as CFDictionary) {
-                let line = CTLineCreateWithAttributedString(attrStr)
-                var ascent: CGFloat = 0
-                var descent: CGFloat = 0
-                var leading: CGFloat = 0
-                let textW = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
-                let textH = ascent + descent
-
-                let pillRect = CGRect(
-                    x: (CGFloat(w) - textW) / 2 - 14 * scaleX,
-                    y: 24 * scaleY,
-                    width: textW + 28 * scaleX,
-                    height: textH + 14 * scaleY
-                )
-                let pillPath = CGPath(roundedRect: pillRect, cornerWidth: 8 * scaleX, cornerHeight: 8 * scaleY, transform: nil)
-                ctx.setFillColor(CGColor(gray: 0.06, alpha: 0.78))
-                ctx.addPath(pillPath)
-                ctx.fillPath()
-
-                ctx.textPosition = CGPoint(x: pillRect.minX + 14 * scaleX, y: pillRect.minY + 7 * scaleY + descent)
-                CTLineDraw(line, ctx)
-            }
-        }
-
-        return ctx.makeImage() ?? rawCG
-    }
-
     private func installInputOverlayMonitors() {
         removeInputOverlayMonitors()
-        let box = self.overlayStateBox
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
-            box.recordClick(at: ProcessInfo.processInfo.systemUptime)
-        }
+        guard recordKeystrokes else { return }
         keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { event in
             let chars = event.charactersIgnoringModifiers?.uppercased() ?? ""
             guard !chars.isEmpty else { return }
@@ -423,22 +299,21 @@ public final class ScreenRecorderManager: ObservableObject {
             if event.modifierFlags.contains(.control) { prefix += "⌃" }
             if event.modifierFlags.contains(.shift) { prefix += "⇧" }
             let label = "⌨️ \(prefix)\(chars)"
-            box.recordKey(label, at: ProcessInfo.processInfo.systemUptime)
+            Task { @MainActor [weak self] in self?.pipeline?.recordKeyOverlay(label) }
         }
     }
 
     private func removeInputOverlayMonitors() {
-        if let m = mouseMonitor { NSEvent.removeMonitor(m); mouseMonitor = nil }
         if let k = keyMonitor { NSEvent.removeMonitor(k); keyMonitor = nil }
     }
 
     // MARK: - Export Dialog with Side-by-Side Radio Buttons (Default: MP4, Zero Text Truncation!)
 
-    private func promptExportDialog(timedFrames: [TimedRecordingFrame]) {
+    private func promptExportDialog(recordingURL: URL) {
         selectedExportFormat = .mp4
 
         let savePanel = NSSavePanel()
-        savePanel.title = "保存录屏 (30 FPS)"
+        savePanel.title = L10n.string("保存录屏 (30 FPS)")
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let baseName = "SnapLex_Record_\(formatter.string(from: Date()))"
@@ -462,158 +337,79 @@ public final class ScreenRecorderManager: ObservableObject {
         containerView.addSubview(accessoryHosting)
         savePanel.accessoryView = containerView
 
-        guard savePanel.runModal() == .OK, let rawURL = savePanel.url else { return }
+        guard savePanel.runModal() == .OK, let rawURL = savePanel.url else {
+            try? FileManager.default.removeItem(at: recordingURL)
+            return
+        }
 
         let chosenFormat = selectedExportFormat
         let finalURL = rawURL.deletingPathExtension().appendingPathExtension(chosenFormat.fileExtension)
 
-        switch chosenFormat {
-        case .mp4:
-            Task.detached(priority: .userInitiated) {
-                Self.exportTimedMP4VideoSync(timedFrames: timedFrames, to: finalURL)
+        Task.detached(priority: .userInitiated) {
+            do {
+                try? FileManager.default.removeItem(at: finalURL)
+                switch chosenFormat {
+                case .mp4:
+                    try FileManager.default.moveItem(at: recordingURL, to: finalURL)
+                case .gif:
+                    try await Self.exportAnimatedGIF(from: recordingURL, to: finalURL)
+                    try? FileManager.default.removeItem(at: recordingURL)
+                }
                 await MainActor.run {
                     NSWorkspace.shared.activateFileViewerSelecting([finalURL])
                 }
-            }
-        case .gif:
-            Task.detached(priority: .userInitiated) {
-                // Sample at 15 FPS (`every 2nd frame` from 30 FPS capture) so GIF playback is smooth and file size stays compact
-                let strideStep = timedFrames.count > 40 ? 2 : 1
-                var gifImages: [CGImage] = []
-                for idx in stride(from: 0, to: timedFrames.count, by: strideStep) {
-                    gifImages.append(timedFrames[idx].image)
-                }
-                let avgDelay: Double
-                if let lastTS = timedFrames.last?.timestampSeconds, lastTS > 0.1, gifImages.count > 1 {
-                    avgDelay = max(0.033, min(0.15, lastTS / Double(gifImages.count)))
-                } else {
-                    avgDelay = Double(strideStep) / 30.0
-                }
-                Self.exportAnimatedGIF(frames: gifImages, to: finalURL, frameDelay: avgDelay)
+            } catch {
+                try? FileManager.default.removeItem(at: recordingURL)
                 await MainActor.run {
-                    NSWorkspace.shared.activateFileViewerSelecting([finalURL])
+                    self.showRecordingError(L10n.string("无法保存录屏文件，请检查存储空间后重试。"))
                 }
             }
         }
     }
 
-    public nonisolated static func exportAnimatedGIF(frames: [CGImage], to url: URL, frameDelay: Double) {
+    private nonisolated static func exportAnimatedGIF(from sourceURL: URL, to url: URL) async throws {
+        let asset = AVURLAsset(url: sourceURL)
+        let duration = try await asset.load(.duration).seconds
+        guard duration.isFinite, duration > 0 else { throw ScreenCaptureRecordingError.noFrames }
+        let frameRate = 15
+        let frameCount = max(1, min(5_400, Int(ceil(duration * Double(frameRate)))))
         try? FileManager.default.removeItem(at: url)
-        guard !frames.isEmpty,
-              let destination = CGImageDestinationCreateWithURL(
-                  url as CFURL,
-                  UTType.gif.identifier as CFString,
-                  frames.count,
-                  nil
-              ) else {
-            return
-        }
+        guard let destination = CGImageDestinationCreateWithURL(
+            url as CFURL,
+            UTType.gif.identifier as CFString,
+            frameCount,
+            nil
+        ) else { throw ScreenCaptureRecordingError.writeFailed }
 
-        let fileProperties: [String: Any] = [
+        CGImageDestinationSetProperties(destination, [
+            kCGImagePropertyGIFDictionary as String: [kCGImagePropertyGIFLoopCount as String: 0]
+        ] as CFDictionary)
+
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = CMTime(value: 1, timescale: 30)
+        generator.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 30)
+        let delay = 1.0 / Double(frameRate)
+        let properties: [String: Any] = [
             kCGImagePropertyGIFDictionary as String: [
-                kCGImagePropertyGIFLoopCount as String: 0
+                kCGImagePropertyGIFDelayTime as String: delay,
+                kCGImagePropertyGIFUnclampedDelayTime as String: delay
             ]
         ]
-        CGImageDestinationSetProperties(destination, fileProperties as CFDictionary)
-
-        let frameProperties: [String: Any] = [
-            kCGImagePropertyGIFDictionary as String: [
-                kCGImagePropertyGIFDelayTime as String: frameDelay,
-                kCGImagePropertyGIFUnclampedDelayTime as String: frameDelay
-            ]
-        ]
-
-        for cgFrame in frames {
-            CGImageDestinationAddImage(destination, cgFrame, frameProperties as CFDictionary)
-        }
-        CGImageDestinationFinalize(destination)
-    }
-
-    /// Exports 30 FPS H.264 MP4 using exact real-time presentation timestamps (`CMTime` timescale 600)
-    private nonisolated static func exportTimedMP4VideoSync(timedFrames: [TimedRecordingFrame], to url: URL) {
-        guard let first = timedFrames.first?.image else { return }
-        try? FileManager.default.removeItem(at: url)
-
-        // H.264 requires even width and height
-        let w = max(16, (first.width / 2) * 2)
-        let h = max(16, (first.height / 2) * 2)
-        guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mp4) else {
-            return
-        }
-
-        let settings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: w,
-            AVVideoHeightKey: h,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: max(4_000_000, w * h * 6),
-                AVVideoExpectedSourceFrameRateKey: 30,
-                AVVideoMaxKeyFrameIntervalKey: 30
-            ]
-        ]
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
-        input.expectsMediaDataInRealTime = false
-
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-                kCVPixelBufferWidthKey as String: w,
-                kCVPixelBufferHeightKey as String: h
-            ]
-        )
-
-        guard writer.canAdd(input) else { return }
-        writer.add(input)
-        writer.startWriting()
-        writer.startSession(atSourceTime: .zero)
-
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-        var lastTickValue: Int64 = -1
-
-        for (idx, item) in timedFrames.enumerated() {
-            while !input.isReadyForMoreMediaData {
-                Thread.sleep(forTimeInterval: 0.002)
+        for index in 0..<frameCount {
+            let time = CMTime(value: Int64(index), timescale: Int32(frameRate))
+            let image: CGImage = try await withCheckedThrowingContinuation { continuation in
+                generator.generateCGImageAsynchronously(for: time) { image, _, error in
+                    if let image {
+                        continuation.resume(returning: image)
+                    } else {
+                        continuation.resume(throwing: error ?? ScreenCaptureRecordingError.writeFailed)
+                    }
+                }
             }
-            guard let pool = adaptor.pixelBufferPool else { continue }
-            var pixelBuffer: CVPixelBuffer?
-            guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixelBuffer) == kCVReturnSuccess,
-                  let pb = pixelBuffer else { continue }
-
-            CVPixelBufferLockBaseAddress(pb, [])
-            if let ctx = CGContext(
-                data: CVPixelBufferGetBaseAddress(pb),
-                width: w,
-                height: h,
-                bitsPerComponent: 8,
-                bytesPerRow: CVPixelBufferGetBytesPerRow(pb),
-                space: colorSpace,
-                bitmapInfo: bitmapInfo
-            ) {
-                ctx.draw(item.image, in: CGRect(x: 0, y: 0, width: w, height: h))
-            }
-            CVPixelBufferUnlockBaseAddress(pb, [])
-
-            // Strict monotonically increasing presentation time at 600 ticks/sec (20 ticks per 30fps frame)
-            var tick = Int64(round(item.timestampSeconds * 600.0))
-            if idx == 0 {
-                tick = 0
-            } else if tick <= lastTickValue {
-                tick = lastTickValue + 20
-            }
-            lastTickValue = tick
-
-            let presentationTime = CMTime(value: tick, timescale: 600)
-            adaptor.append(pb, withPresentationTime: presentationTime)
+            CGImageDestinationAddImage(destination, image, properties as CFDictionary)
         }
-
-        input.markAsFinished()
-        let sema = DispatchSemaphore(value: 0)
-        writer.finishWriting {
-            sema.signal()
-        }
-        sema.wait()
+        guard CGImageDestinationFinalize(destination) else { throw ScreenCaptureRecordingError.writeFailed }
     }
 
     // MARK: - Recording Guide Border & Dynamic-Width Outer Centered Floating Bar
@@ -629,6 +425,7 @@ public final class ScreenRecorderManager: ObservableObject {
         win.backgroundColor = .clear
         win.isOpaque = false
         win.hasShadow = true
+        win.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         win.ignoresMouseEvents = true
         win.sharingType = .none
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -697,6 +494,7 @@ public final class ScreenRecorderManager: ObservableObject {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
+        panel.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         panel.sharingType = .none
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -719,6 +517,31 @@ public final class ScreenRecorderManager: ObservableObject {
     }
 }
 
+private struct RecordingErrorToastView: View {
+    let message: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(L10n.string("录屏未能完成"))
+                .font(.system(size: 12, weight: .semibold))
+            Text(message)
+                .font(.system(size: 11))
+                .lineLimit(2)
+                .truncationMode(.tail)
+        }
+        .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
+        )
+        .snapLexAppearance()
+    }
+}
+
 // MARK: - Side-by-Side Radio Button Export Format Selector (Default: MP4, Zero Text Truncation!)
 
 private struct ExportFormatRadioAccessoryView: View {
@@ -727,7 +550,7 @@ private struct ExportFormatRadioAccessoryView: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            Text("导出格式：")
+            Text(L10n.string("导出格式："))
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: true, vertical: true)
@@ -751,7 +574,7 @@ private struct ExportFormatRadioAccessoryView: View {
                                     .frame(width: 8.5, height: 8.5)
                             }
                         }
-                        Text(format.rawValue)
+                        Text(L10n.string(format.rawValue))
                             .font(.system(size: 13, weight: manager.selectedExportFormat == format ? .semibold : .regular))
                             .foregroundStyle(.primary)
                             .fixedSize(horizontal: true, vertical: true)
@@ -777,15 +600,16 @@ private struct ExportFormatRadioAccessoryView: View {
 
 private struct ActiveRecordingControlBarView: View {
     @ObservedObject var manager: ScreenRecorderManager
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 12) {
             if manager.isCountingDown {
                 HStack(spacing: 7) {
                     Circle().fill(Color.red).frame(width: 9, height: 9)
-                    Text("准备录制 · 倒计时 \(manager.activeCountdownValue) 秒...")
+                    Text(L10n.format("准备录制 · 倒计时 %d 秒...", manager.activeCountdownValue))
                         .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                         .fixedSize(horizontal: true, vertical: false)
                 }
             } else {
@@ -795,28 +619,28 @@ private struct ActiveRecordingControlBarView: View {
                         .frame(width: 9, height: 9)
                     Text(formatDuration(manager.elapsedSeconds))
                         .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                         .fixedSize(horizontal: true, vertical: false)
-                    Text("· 30FPS")
+                    Text(L10n.string("· 30FPS"))
                         .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.62))
+                        .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.62))
                         .fixedSize(horizontal: true, vertical: false)
                 }
 
-                Divider().frame(height: 16).background(Color.white.opacity(0.22))
+                Divider().frame(height: 16).background(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.22))
 
                 Button(action: { manager.togglePauseRecording() }) {
                     HStack(spacing: 4) {
                         Image(systemName: manager.isPaused ? "play.fill" : "pause.fill")
                             .font(.system(size: 11.5, weight: .bold))
-                        Text(manager.isPaused ? "继续" : "暂停")
+                        Text(L10n.string(manager.isPaused ? "继续" : "暂停"))
                             .font(.system(size: 11.5, weight: .semibold))
                             .fixedSize(horizontal: true, vertical: false)
                     }
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.15)))
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
                 }
                 .buttonStyle(.plain)
                 .fixedSize(horizontal: true, vertical: false)
@@ -826,11 +650,11 @@ private struct ActiveRecordingControlBarView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 11))
-                    Text("结束 F10")
+                    Text(L10n.string("结束 F10"))
                         .font(.system(size: 12, weight: .semibold))
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.white)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(
@@ -846,9 +670,10 @@ private struct ActiveRecordingControlBarView: View {
         .fixedSize(horizontal: true, vertical: true)
         .background(
             Capsule()
-                .fill(Color(white: 0.10, opacity: 0.96))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+                .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
+                .overlay(Capsule().strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1))
         )
+        .snapLexAppearance()
     }
 
     private func formatDuration(_ sec: Int) -> String {

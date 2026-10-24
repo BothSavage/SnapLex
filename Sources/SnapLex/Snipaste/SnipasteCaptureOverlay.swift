@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import CoreGraphics
+import CoreText
 import QuartzCore
 
 // MARK: - Ultra-Fast In-Memory Screen Capture Bridge (Zero Subprocess, Zero Disk I/O, Zero PNG Encode)
@@ -33,6 +34,10 @@ private enum FastScreenCapture {
 
     /// Warms up WindowServer Mach port on background queue at app launch
     static func warmup() {
+        // Never provoke the Screen Recording permission prompt during launch.
+        // The explicit request is made from the user's F1 action, before any
+        // capture overlay is created.
+        guard CGPreflightScreenCaptureAccess() else { return }
         DispatchQueue.global(qos: .utility).async {
             _ = windowListCreateImageFn?(
                 CGRect(x: 0, y: 0, width: 4, height: 4),
@@ -93,8 +98,20 @@ public final class SnipasteCaptureManager: NSObject {
         }
     }
 
+    public func applyAppearance(_ appearance: NSAppearance?) {
+        reusableWindow?.appearance = appearance
+    }
+
     public func startCapture(openRecordingSubbar: Bool = false) {
         guard !isCapturing else { return }
+
+        // The system permission dialog must be presented before the high-level
+        // screenshot panel. Otherwise the screenSaver-level panel can cover the
+        // dialog and leave the user unable to grant access.
+        guard ScreenCapturePermissionGate.ensureAccess(
+            preflight: { CGPreflightScreenCaptureAccess() },
+            request: { CGRequestScreenCaptureAccess() }
+        ) else { return }
 
         let mouse = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main else {
@@ -121,6 +138,7 @@ public final class SnipasteCaptureManager: NSObject {
         }
 
         isCapturing = true
+        window.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         window.updateScreenFrame(screenFrame)
         window.level = .screenSaver
         window.canvasView.beginSession(
@@ -292,6 +310,10 @@ public final class SnipasteOverlayWindow: NSPanel {
 
 // MARK: - 120Hz GPU-Accelerated Snipaste Canvas View
 
+public enum SnipasteVisionToolAction: Equatable {
+    case scanBarcodes
+}
+
 @MainActor
 public final class SnipasteCaptureCanvasView: NSView {
     private var screenOrigin: CGPoint
@@ -299,6 +321,19 @@ public final class SnipasteCaptureCanvasView: NSView {
     private var detectedWindows: [DetectedWindowInfo] = []
     private let backgroundLayerProvider: () -> CALayer?
     private let onFinish: () -> Void
+
+    private var themeForeground: NSColor {
+        SnapLexTheme.appKitToolbarForeground(for: effectiveAppearance)
+    }
+
+    private var themeBackground: NSColor {
+        SnapLexTheme.appKitToolbarBackground(for: effectiveAppearance)
+    }
+
+    override public func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
 
     // 1x1 pixel RGBA context for 0.003ms color sampling
     private let singlePixelContext: CGContext? = {
@@ -332,6 +367,10 @@ public final class SnipasteCaptureCanvasView: NSView {
         case movingSelection(startMouse: CGPoint, initialRect: CGRect)
         case resizingSelection(handle: ResizeHandlePosition, initialRect: CGRect)
         case drawingAnnotation
+        case selectingAnnotation(id: UUID)
+        case movingAnnotation(id: UUID, initial: SnipAnnotationItem, startMouse: CGPoint)
+        case scalingAnnotation(id: UUID, initial: SnipAnnotationItem, anchor: CGPoint, startDistance: CGFloat)
+        case rotatingAnnotation(id: UUID, initial: SnipAnnotationItem, center: CGPoint, startAngle: CGFloat)
     }
     private var interaction: DragInteraction = .none
 
@@ -381,11 +420,15 @@ public final class SnipasteCaptureCanvasView: NSView {
     private var annotations: [SnipAnnotationItem] = []
     private var redoStack: [SnipAnnotationItem] = []
     private var activeAnnotation: SnipAnnotationItem?
+    private var selectedAnnotationID: UUID?
     private var nextCounterValue: Int = 1
 
     // Color picker format
     public var colorFormat: SnipColorFormat = .hex
     private var statusToast: String?
+    private var statusToastToken = UUID()
+    private var isApplyingImageEffect = false
+    private var isScanningBarcodes = false
 
     // Floating SwiftUI toolbar subview (allocated once, reused across F1 sessions!)
     private var toolbarHostingView: NSHostingView<SnipasteToolbarSwiftUIView>?
@@ -446,6 +489,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         self.annotations.removeAll()
         self.redoStack.removeAll()
         self.activeAnnotation = nil
+        self.selectedAnnotationID = nil
         self.nextCounterValue = 1
         self.statusToast = nil
         self.toolbarHostingView?.isHidden = true
@@ -490,6 +534,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         self.annotations.removeAll()
         self.redoStack.removeAll()
         self.activeAnnotation = nil
+        self.selectedAnnotationID = nil
         self.toolbarHostingView?.isHidden = true
     }
 
@@ -610,7 +655,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             onSelectTool: { [weak self] tool in
                 guard let self = self else { return }
                 self.commitInlineTextIfNeeded()
-                self.currentTool = (self.currentTool == tool && tool != .selectMove) ? .selectMove : tool
+                self.currentTool = tool
             },
             onSelectColor: { [weak self] color in
                 self?.strokeColor = color
@@ -686,7 +731,7 @@ public final class SnipasteCaptureCanvasView: NSView {
                     } else if let firstWin = self.detectedWindows.first {
                         self.selectionRect = firstWin.frameInScreen
                     }
-                    self.showToast("🪟 请在下方窗口列表点击，或直接在屏幕上点击要录制的窗口")
+                    self.showToast(L10n.string("🪟 请在下方窗口列表点击，或直接在屏幕上点击要录制的窗口"))
                 case .fullScreen:
                     self.selectionRect = self.bounds
                 }
@@ -706,6 +751,12 @@ public final class SnipasteCaptureCanvasView: NSView {
             },
             onPinToScreen: { [weak self] in
                 self?.triggerPinAction()
+            },
+            onApplyImageEffect: { [weak self] effect in
+                self?.triggerImageEffect(effect)
+            },
+            onVisionTool: { [weak self] action in
+                self?.triggerVisionTool(action)
             },
             onOCRTranslate: { [weak self] in
                 self?.triggerOCRTranslateAction()
@@ -763,6 +814,9 @@ public final class SnipasteCaptureCanvasView: NSView {
                 }
                 if let active = activeAnnotation {
                     drawAnnotationItem(active, in: ctx)
+                }
+                if let selected = annotations.first(where: { $0.id == selectedAnnotationID }) {
+                    drawAnnotationSelection(selected, in: ctx)
                 }
                 ctx.restoreGState()
             }
@@ -862,20 +916,20 @@ public final class SnipasteCaptureCanvasView: NSView {
         let h = Int(round(rect.height))
         var label = "\(w) × \(h)"
         if !hasLockedSelection, let win = hoveredWindow {
-            label = "\(win.appName)  ·  \(w) × \(h)  (单击选中窗口 / 拖拽自由框选)"
+            label = L10n.format("%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)", win.appName, w, h)
         } else if isRecordingSubbarExpanded, ScreenRecorderManager.shared.targetMode == .window {
             if let matched = detectedWindows.first(where: { $0.frameInScreen == rect }) {
-                label = "当前录制窗口: \(matched.displayLabel)  ·  \(w) × \(h)"
+                label = L10n.format("当前录制窗口: %@  ·  %d × %d", matched.displayLabel, w, h)
             } else {
-                label = "窗口录制  ·  \(w) × \(h)  (可点击其他窗口切换)"
+                label = L10n.format("窗口录制  ·  %d × %d  (可点击其他窗口切换)", w, h)
             }
         } else if hasLockedSelection {
-            label = "\(w) × \(h)   [F3 贴图 · Enter 复制 · 拖拽四边微调]"
+            label = L10n.format("%d × %d   [F3 贴图 · Enter 复制 · 拖拽四边微调]", w, h)
         }
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold),
-            .foregroundColor: NSColor.white
+            .foregroundColor: themeForeground
         ]
         let str = NSAttributedString(string: label, attributes: attrs)
         let strSize = str.size()
@@ -891,17 +945,20 @@ public final class SnipasteCaptureCanvasView: NSView {
 
         let pillRect = CGRect(x: bx, y: by, width: strSize.width + padX * 2, height: strSize.height + padY * 2)
         let bezier = NSBezierPath(roundedRect: pillRect, xRadius: 6, yRadius: 6)
-        NSColor.black.withAlphaComponent(0.82).setFill()
+        themeBackground.setFill()
         bezier.fill()
+        SnapLexTheme.appKitToolbarBorder(for: effectiveAppearance).setStroke()
+        bezier.lineWidth = 0.8
+        bezier.stroke()
         str.draw(at: CGPoint(x: pillRect.minX + padX, y: pillRect.minY + padY))
     }
 
     private func drawHoveredWindowCandidateBadge(for win: DetectedWindowInfo) {
         let rect = win.frameInScreen
-        let label = "\(win.displayLabel)  [单击选择此窗口录制]"
+        let label = L10n.format("%@  [单击选择此窗口录制]", win.displayLabel)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11.5, weight: .semibold),
-            .foregroundColor: NSColor.white
+            .foregroundColor: themeForeground
         ]
         let str = NSAttributedString(string: label, attributes: attrs)
         let strSize = str.size()
@@ -912,8 +969,11 @@ public final class SnipasteCaptureCanvasView: NSView {
 
         let pillRect = CGRect(x: bx, y: by, width: strSize.width + padX * 2, height: strSize.height + padY * 2)
         let bezier = NSBezierPath(roundedRect: pillRect, xRadius: 6, yRadius: 6)
-        NSColor.black.withAlphaComponent(0.84).setFill()
+        themeBackground.setFill()
         bezier.fill()
+        SnapLexTheme.appKitToolbarBorder(for: effectiveAppearance).setStroke()
+        bezier.lineWidth = 0.8
+        bezier.stroke()
         str.draw(at: CGPoint(x: pillRect.minX + padX, y: pillRect.minY + padY))
     }
 
@@ -943,7 +1003,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         ctx.addPath(clipPath)
         ctx.clip()
 
-        ctx.setFillColor(NSColor(calibratedWhite: 0.10, alpha: 0.92).cgColor)
+        ctx.setFillColor(themeBackground.cgColor)
         ctx.fill(hudRect)
 
         // Draw magnified 11x11 pixel grid via single CGImage crop with .none interpolation (0.01ms!)
@@ -989,21 +1049,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         let colorCode = colorFormat.format(r: r, g: g, b: b)
 
         let coordText = "POS: (\(Int(cursor.x)), \(Int(bounds.height - cursor.y)))"
-        let hintText = "[C] 复制色值  [Shift] 切换\(colorFormat.next().rawValue)"
-
-        let line1Attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
-            .foregroundColor: NSColor.white
-        ]
-        let line2Attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: NSColor(calibratedWhite: 0.80, alpha: 1.0)
-        ]
-        // Pure white color for copy color hint (`复制色值改成白色吧`)
-        let line3Attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 9.5, weight: .medium),
-            .foregroundColor: NSColor.white
-        ]
+        let hintText = L10n.format("[C] 复制色值  [Shift] 切换%@", L10n.string(colorFormat.next().rawValue))
 
         let swatchRect = CGRect(x: hx + 10, y: hy + infoHeight - 22, width: 14, height: 14)
         ctx.setFillColor(sampledColor.cgColor)
@@ -1012,19 +1058,66 @@ public final class SnipasteCaptureCanvasView: NSView {
         ctx.setLineWidth(1)
         ctx.stroke(swatchRect)
 
-        NSAttributedString(string: colorCode, attributes: line1Attrs)
-            .draw(at: CGPoint(x: hx + 30, y: hy + infoHeight - 22))
-        NSAttributedString(string: coordText, attributes: line2Attrs)
-            .draw(at: CGPoint(x: hx + 10, y: hy + infoHeight - 42))
-        NSAttributedString(string: hintText, attributes: line3Attrs)
-            .draw(at: CGPoint(x: hx + 10, y: hy + 8))
+        // Draw directly with Core Text. NSAttributedString.draw(at:) routes
+        // through AppKit's typesetter during every overlay redraw and has
+        // crashed here with an NSInvalidArgumentException on macOS 26.
+        drawMagnifierHUDText(
+            colorCode,
+            fontName: "Menlo-Bold",
+            fontSize: 11,
+            color: themeForeground.cgColor,
+            at: CGPoint(x: hx + 30, y: hy + infoHeight - 22),
+            in: ctx
+        )
+        drawMagnifierHUDText(
+            coordText,
+            fontName: "Menlo",
+            fontSize: 10,
+            color: themeForeground.withAlphaComponent(0.72).cgColor,
+            at: CGPoint(x: hx + 10, y: hy + infoHeight - 42),
+            in: ctx
+        )
+        drawMagnifierHUDText(
+            hintText,
+            fontName: "HelveticaNeue-Medium",
+            fontSize: 9.5,
+            color: themeForeground.cgColor,
+            at: CGPoint(x: hx + 10, y: hy + 8),
+            in: ctx
+        )
 
-        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.28).cgColor)
+        ctx.setStrokeColor(SnapLexTheme.appKitToolbarBorder(for: effectiveAppearance).cgColor)
         ctx.setLineWidth(1.2)
         ctx.addPath(clipPath)
         ctx.strokePath()
 
         ctx.restoreGState()
+    }
+
+    private func drawMagnifierHUDText(
+        _ text: String,
+        fontName: String,
+        fontSize: CGFloat,
+        color: CGColor,
+        at point: CGPoint,
+        in context: CGContext
+    ) {
+        let font = CTFontCreateWithName(fontName as CFString, fontSize, nil)
+        let attributes: [CFString: Any] = [
+            kCTFontAttributeName: font,
+            kCTForegroundColorAttributeName: color
+        ]
+        guard let attributedString = CFAttributedStringCreate(
+            nil,
+            text as CFString,
+            attributes as CFDictionary
+        ) else { return }
+
+        let line = CTLineCreateWithAttributedString(attributedString)
+        context.saveGState()
+        context.textPosition = point
+        CTLineDraw(line, context)
+        context.restoreGState()
     }
 
     private func sampleRGB(at viewPoint: CGPoint) -> (Int, Int, Int, NSColor) {
@@ -1049,30 +1142,53 @@ public final class SnipasteCaptureCanvasView: NSView {
     }
 
     private func drawToast(_ text: String) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: NSColor.white
-        ]
-        let attrStr = NSAttributedString(string: text, attributes: attrs)
+        let visibleSelection = selectionRect.intersection(bounds)
+        let container = hasLockedSelection && visibleSelection.width >= 120 && visibleSelection.height >= 44
+            ? visibleSelection
+            : bounds.insetBy(dx: 8, dy: 8)
+        let maxTextWidth = max(48, min(container.width - 44, bounds.width - 44))
+        let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        var visibleText = text
+        var attrStr = NSAttributedString(string: visibleText, attributes: [
+            .font: font,
+            .foregroundColor: themeForeground
+        ])
+        while attrStr.size().width > maxTextWidth, visibleText.count > 2 {
+            visibleText = String(visibleText.dropLast(2)) + "…"
+            attrStr = NSAttributedString(string: visibleText, attributes: [
+                .font: font,
+                .foregroundColor: themeForeground
+            ])
+        }
+
         let size = attrStr.size()
-        let rect = CGRect(
-            x: (bounds.width - size.width) / 2 - 14,
-            y: bounds.height - 80,
-            width: size.width + 28,
-            height: size.height + 14
-        )
+        let width = min(size.width + 28, container.width - 12)
+        let height = size.height + 14
+        let x = max(container.minX + 6, min(container.midX - width / 2, container.maxX - width - 6))
+        let y = min(container.minY + 12, container.maxY - height - 8)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: themeForeground
+        ]
+        let rect = CGRect(x: x, y: y, width: width, height: height)
         let path = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
-        NSColor.black.withAlphaComponent(0.82).setFill()
+        themeBackground.setFill()
         path.fill()
-        attrStr.draw(at: CGPoint(x: rect.minX + 14, y: rect.minY + 7))
+        SnapLexTheme.appKitToolbarBorder(for: effectiveAppearance).setStroke()
+        path.lineWidth = 0.8
+        path.stroke()
+        NSAttributedString(string: visibleText, attributes: attrs)
+            .draw(at: CGPoint(x: rect.minX + 14, y: rect.minY + 7))
     }
 
     private func showToast(_ message: String) {
         statusToast = message
+        statusToastToken = UUID()
+        let token = statusToastToken
         needsDisplay = true
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_300_000_000)
-            if self.statusToast == message {
+            if self.statusToastToken == token {
                 self.statusToast = nil
                 self.needsDisplay = true
             }
@@ -1084,6 +1200,11 @@ public final class SnipasteCaptureCanvasView: NSView {
     private func drawAnnotationItem(_ item: SnipAnnotationItem, in ctx: CGContext) {
         ctx.saveGState()
         defer { ctx.restoreGState() }
+
+        let center = item.transformCenter
+        ctx.translateBy(x: center.x, y: center.y)
+        ctx.rotate(by: item.rotationDegrees * .pi / 180)
+        ctx.translateBy(x: -center.x, y: -center.y)
 
         let rect = item.boundingRect
         switch item.tool {
@@ -1152,7 +1273,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             drawFastBlur(in: rect, ctx: ctx)
 
         case .counter:
-            let radius: CGFloat = 13
+            let radius = max(13, item.lineWidth * 3)
             let badgeRect = CGRect(
                 x: item.startPoint.x - radius,
                 y: item.startPoint.y - radius,
@@ -1167,7 +1288,7 @@ public final class SnipasteCaptureCanvasView: NSView {
 
             let numStr = "\(item.counterNumber)" as NSString
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+                .font: NSFont.systemFont(ofSize: max(13, item.lineWidth * 3), weight: .bold),
                 .foregroundColor: NSColor.white
             ]
             let size = numStr.size(withAttributes: attrs)
@@ -1178,12 +1299,15 @@ public final class SnipasteCaptureCanvasView: NSView {
 
         case .text:
             guard !item.text.isEmpty else { break }
-            // Plain text, no background plate
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: item.textFont,
                 .foregroundColor: item.color
             ]
-            (item.text as NSString).draw(at: item.startPoint, withAttributes: attrs)
+            let size = (item.text as NSString).size(withAttributes: attrs)
+            (item.text as NSString).draw(
+                at: CGPoint(x: item.startPoint.x, y: item.startPoint.y - size.height / 2),
+                withAttributes: attrs
+            )
         }
     }
 
@@ -1223,6 +1347,46 @@ public final class SnipasteCaptureCanvasView: NSView {
         ctx.addLine(to: p2)
         ctx.closePath()
         ctx.fillPath()
+    }
+
+    private func drawAnnotationSelection(_ item: SnipAnnotationItem, in ctx: CGContext) {
+        let rect = item.selectionBounds
+        ctx.saveGState()
+        ctx.setStrokeColor(NSColor.systemBlue.cgColor)
+        ctx.setLineWidth(1.2)
+        ctx.stroke(rect)
+
+        let rotatePoint = AnnotationGeometry.rotateHandlePoint(for: item, yAxisDown: false)
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.setLineWidth(2)
+        ctx.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+        ctx.addLine(to: rotatePoint)
+        ctx.strokePath()
+
+        for handle in ResizeHandlePosition.allCases {
+            let point = AnnotationGeometry.point(for: handle, in: rect, yAxisDown: false)
+            let knob = CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fillEllipse(in: knob)
+            ctx.setStrokeColor(NSColor.systemBlue.cgColor)
+            ctx.setLineWidth(1.3)
+            ctx.strokeEllipse(in: knob)
+        }
+
+        let knob = CGRect(x: rotatePoint.x - 5, y: rotatePoint.y - 5, width: 10, height: 10)
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.fillEllipse(in: knob)
+        ctx.setStrokeColor(NSColor.systemBlue.cgColor)
+        ctx.setLineWidth(1.5)
+        ctx.strokeEllipse(in: knob)
+        ctx.restoreGState()
+    }
+
+    private func updateAnnotation(id: UUID, with updated: SnipAnnotationItem) {
+        guard let index = annotations.firstIndex(where: { $0.id == id }) else { return }
+        annotations[index] = updated
+        selectedAnnotationID = id
+        needsDisplay = true
     }
 
     /// Downsamples & upsamples with `.none` interpolation for hardware-accelerated pixel mosaic!
@@ -1337,7 +1501,11 @@ public final class SnipasteCaptureCanvasView: NSView {
             return
         }
 
-        if event.clickCount == 2, hasLockedSelection, selectionRect.contains(pt), currentTool == .selectMove {
+        let annotationAtPoint = annotations.indices.reversed().first(where: { annotations[$0].contains(pt) })
+        if event.clickCount == 2,
+           hasLockedSelection,
+           selectionRect.contains(pt),
+           annotationAtPoint == nil {
             triggerCopyAction()
             return
         }
@@ -1346,6 +1514,43 @@ public final class SnipasteCaptureCanvasView: NSView {
             interaction = .creatingSelection(start: pt)
             return
         }
+
+        if let selectedIndex = annotations.firstIndex(where: { $0.id == selectedAnnotationID }),
+           let handle = AnnotationGeometry.hitTestHandle(
+                at: pt,
+                for: annotations[selectedIndex],
+                yAxisDown: false
+           ) {
+            let item = annotations[selectedIndex]
+            switch handle {
+            case .rotate:
+                let center = item.transformCenter
+                let startAngle = atan2(pt.y - center.y, pt.x - center.x)
+                interaction = .rotatingAnnotation(id: item.id, initial: item, center: center, startAngle: startAngle)
+            case .resize(let resizeHandle):
+                let anchor = AnnotationGeometry.oppositeAnchor(
+                    for: resizeHandle,
+                    in: item.selectionBounds,
+                    yAxisDown: false
+                )
+                let distance = max(4, hypot(pt.x - anchor.x, pt.y - anchor.y))
+                interaction = .scalingAnnotation(id: item.id, initial: item, anchor: anchor, startDistance: distance)
+            }
+            return
+        }
+
+        if let index = annotationAtPoint {
+            let item = annotations[index]
+            if selectedAnnotationID == item.id {
+                interaction = .movingAnnotation(id: item.id, initial: item, startMouse: pt)
+            } else {
+                selectedAnnotationID = item.id
+                interaction = .selectingAnnotation(id: item.id)
+            }
+            needsDisplay = true
+            return
+        }
+        selectedAnnotationID = nil
 
         if let handle = hitTestResizeHandle(at: pt, in: selectionRect) {
             interaction = .resizingSelection(handle: handle, initialRect: selectionRect)
@@ -1432,6 +1637,23 @@ public final class SnipasteCaptureCanvasView: NSView {
             }
             activeAnnotation = active
             needsDisplay = true
+
+        case .selectingAnnotation:
+            break
+
+        case .movingAnnotation(let id, let initial, let startMouse):
+            updateAnnotation(
+                id: id,
+                with: initial.translated(by: CGPoint(x: pt.x - startMouse.x, y: pt.y - startMouse.y))
+            )
+
+        case .scalingAnnotation(let id, let initial, let anchor, let startDistance):
+            let currentDistance = hypot(pt.x - anchor.x, pt.y - anchor.y)
+            updateAnnotation(id: id, with: initial.scaled(by: currentDistance / startDistance, around: anchor))
+
+        case .rotatingAnnotation(let id, let initial, let center, let startAngle):
+            let currentAngle = atan2(pt.y - center.y, pt.x - center.x)
+            updateAnnotation(id: id, with: initial.rotated(by: (currentAngle - startAngle) * 180 / .pi))
         }
     }
 
@@ -1516,7 +1738,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             let code = colorFormat.format(r: r, g: g, b: b)
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(code, forType: .string)
-            showToast("🎨 已复制色值: \(code)")
+            showToast(L10n.format("🎨 已复制色值: %@", code))
 
         case 123, 124, 125, 126: // Left, Right, Down, Up -> 1px nudge (10px with Shift)
             guard hasLockedSelection else { return }
@@ -1619,7 +1841,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         tf.cell?.wraps = false
         tf.cell?.isScrollable = true
         tf.placeholderAttributedString = NSAttributedString(
-            string: "输入文字",
+            string: L10n.string("输入文字"),
             attributes: [
                 .font: font,
                 .foregroundColor: strokeColor.withAlphaComponent(0.45)
@@ -1644,7 +1866,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         tf.font = font
         tf.textColor = strokeColor
         tf.placeholderAttributedString = NSAttributedString(
-            string: "输入文字",
+            string: L10n.string("输入文字"),
             attributes: [.font: font, .foregroundColor: strokeColor.withAlphaComponent(0.45)]
         )
         if let editor = tf.currentEditor() as? NSTextView {
@@ -1671,7 +1893,7 @@ public final class SnipasteCaptureCanvasView: NSView {
     private func resizeInlineTextFieldToFit() {
         guard let tf = inlineTextField else { return }
         let font = currentTextFont
-        let text = tf.stringValue.isEmpty ? "输入文字" : tf.stringValue
+        let text = tf.stringValue.isEmpty ? L10n.string("输入文字") : tf.stringValue
         let size = (text as NSString).size(withAttributes: [.font: font])
         let lineH = ceil(font.ascender - font.descender + font.leading) + 4
         // Extra width for italic overhang + caret
@@ -1688,8 +1910,8 @@ public final class SnipasteCaptureCanvasView: NSView {
         guard let tf = inlineTextField else { return }
         let str = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let font = currentTextFont
-        // NSTextField draws text 2pt in from the left; baseline box sits 2pt above the bottom edge
-        let origin = CGPoint(x: tf.frame.minX + 2, y: tf.frame.minY + 2)
+        // Store the center anchor so selection bounds match both the inline editor and rendered text.
+        let origin = CGPoint(x: tf.frame.minX + 2, y: tf.frame.midY)
         tf.removeFromSuperview()
         inlineTextField = nil
 
@@ -1706,6 +1928,7 @@ public final class SnipasteCaptureCanvasView: NSView {
                 isItalic: textItalic
             )
             annotations.append(item)
+            selectedAnnotationID = nil
             redoStack.removeAll()
             updateToolbarView()
             needsDisplay = true
@@ -1769,6 +1992,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             width: targetRect.width,
             height: targetRect.height
         )
+        ScreenshotHistoryStore.shared.save(outputImage)
         return (outputImage, screenRect)
     }
 
@@ -1808,6 +2032,63 @@ public final class SnipasteCaptureCanvasView: NSView {
         guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
         onFinish()
         SnipastePinManager.shared.pinImage(image, at: screenRect)
+    }
+
+    public func triggerImageEffect(_ effect: VisionImageEffect) {
+        guard !isApplyingImageEffect else { return }
+        guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
+        isApplyingImageEffect = true
+        showToast(effect.progressMessage)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isApplyingImageEffect = false }
+            do {
+                let processed = try await VisionImageEffectsService.shared.apply(effect, to: image)
+                self.onFinish()
+                SnipastePinManager.shared.pinImage(processed, at: screenRect)
+            } catch {
+                self.showToast((error as? VisionImageEffectsError)?.errorDescription ?? L10n.string("无法生成图片效果。"))
+            }
+        }
+    }
+
+    private func triggerVisionTool(_ action: SnipasteVisionToolAction) {
+        guard hasLockedSelection else {
+            showToast(L10n.string("请先框选要处理的截图区域"))
+            return
+        }
+        guard let (image, _) = renderCroppedAnnotatedImage() else { return }
+
+        switch action {
+        case .scanBarcodes:
+            guard !isScanningBarcodes else { return }
+            isScanningBarcodes = true
+            showToast(L10n.string("正在扫描二维码 / 条码…"))
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.isScanningBarcodes = false }
+                do {
+                    let codes = try await VisionBarcodeScanningService.shared.scanBarcodes(in: image)
+                    guard !codes.isEmpty else {
+                        self.showToast(L10n.string("没有识别到二维码或条码"))
+                        return
+                    }
+                    let copyText = codes.map(\.payload).joined(separator: "\n")
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(copyText, forType: .string)
+                    if codes.count == 1 {
+                        let payload = codes[0].payload
+                        let preview = payload.count > 32 ? String(payload.prefix(32)) + "…" : payload
+                        self.showToast(L10n.format("扫码结果已复制：%@", preview))
+                    } else {
+                        self.showToast(L10n.format("扫描到 %d 个码，内容已复制", codes.count))
+                    }
+                } catch {
+                    self.showToast(L10n.string("无法读取这张图片。"))
+                }
+            }
+        }
     }
 
     /// Opens the Image 2 In-Place Image Translation Viewer directly!
@@ -1909,6 +2190,8 @@ public struct SnipasteToolbarSwiftUIView: View {
     public let onSelectDetectedWindow: (DetectedWindowInfo) -> Void
     public let onStartRecordingNow: () -> Void
     public let onPinToScreen: () -> Void
+    public let onApplyImageEffect: (VisionImageEffect) -> Void
+    public let onVisionTool: (SnipasteVisionToolAction) -> Void
     public let onOCRTranslate: () -> Void
     public let onOCRExtract: () -> Void
     public let onSaveFile: () -> Void
@@ -1916,6 +2199,7 @@ public struct SnipasteToolbarSwiftUIView: View {
     public let onCopyConfirm: () -> Void
 
     @ObservedObject private var recorder = ScreenRecorderManager.shared
+    @Environment(\.colorScheme) private var colorScheme
 
     private let palette: [NSColor] = [
         .systemRed,
@@ -1987,6 +2271,24 @@ public struct SnipasteToolbarSwiftUIView: View {
                     action: onOCRExtract
                 )
 
+                InstantBlackIconButton(
+                    icon: "drop.halffull",
+                    tooltip: "背景虚化",
+                    action: { onApplyImageEffect(.blurBackground) }
+                )
+
+                InstantBlackIconButton(
+                    icon: "person.crop.rectangle",
+                    tooltip: "提取主体（透明背景）",
+                    action: { onApplyImageEffect(.extractSubject) }
+                )
+
+                InstantBlackIconButton(
+                    icon: "qrcode.viewfinder",
+                    tooltip: L10n.string("扫描二维码 / 条码"),
+                    action: { onVisionTool(.scanBarcodes) }
+                )
+
                 // Pin to Screen (F3)
                 InstantBlackIconButton(
                     icon: "pin",
@@ -2021,12 +2323,11 @@ public struct SnipasteToolbarSwiftUIView: View {
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(white: 0.10, opacity: 0.96))
+                    .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                            .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1)
                     )
-                    .shadow(color: .black.opacity(0.38), radius: 10, x: 0, y: 4)
             )
             .padding(.top, 30)
 
@@ -2039,7 +2340,7 @@ public struct SnipasteToolbarSwiftUIView: View {
                             InstantBlackIconButton(
                                 icon: mode.iconName,
                                 isSelected: recorder.targetMode == mode,
-                                tooltip: "\(mode.rawValue)录制",
+                                tooltip: L10n.format("%@录制", mode.localizedLabel),
                                 action: { onSelectRecordingMode(mode) }
                             )
                         }
@@ -2051,7 +2352,7 @@ public struct SnipasteToolbarSwiftUIView: View {
                             InstantBlackTextPillButton(
                                 label: sec == 0 ? "0s" : "\(sec)s",
                                 isSelected: recorder.countdownSeconds == sec,
-                                tooltip: sec == 0 ? "无倒计时 (立即录制)" : "倒计时 \(sec) 秒",
+                                tooltip: sec == 0 ? "无倒计时 (立即录制)" : L10n.format("倒计时 %d 秒", sec),
                                 action: { recorder.countdownSeconds = sec }
                             )
                         }
@@ -2106,12 +2407,11 @@ public struct SnipasteToolbarSwiftUIView: View {
                     .padding(.vertical, 5)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color(white: 0.10, opacity: 0.96))
+                            .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                                    .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1)
                             )
-                            .shadow(color: .black.opacity(0.30), radius: 6, x: 0, y: 3)
                     )
 
                     // Row 2A-Sub: Open Window Selector when `.window` mode is active!
@@ -2120,10 +2420,10 @@ public struct SnipasteToolbarSwiftUIView: View {
                             HStack(spacing: 4) {
                                 Image(systemName: "macwindow.on.rectangle")
                                     .font(.system(size: 11))
-                                    .foregroundStyle(.white.opacity(0.75))
-                                Text("选择打开的窗口:")
+                                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.75))
+                                Text(L10n.string("选择打开的窗口:"))
                                     .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.78))
+                                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.78))
                                     .fixedSize()
                             }
 
@@ -2137,20 +2437,20 @@ public struct SnipasteToolbarSwiftUIView: View {
                                             HStack(spacing: 4) {
                                                 Image(systemName: isCurrent ? "checkmark.circle.fill" : "macwindow")
                                                     .font(.system(size: 10.5))
-                                                    .foregroundStyle(isCurrent ? Color.white : Color.white.opacity(0.7))
-                                                Text(win.displayLabel)
+                                                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(isCurrent ? 1 : 0.7))
+                                                Text(L10n.string(win.displayLabel))
                                                     .font(.system(size: 11, weight: isCurrent ? .bold : .medium))
-                                                    .foregroundStyle(.white)
+                                                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                                                     .fixedSize()
                                             }
                                             .padding(.horizontal, 8)
                                             .padding(.vertical, 4)
                                             .background(
                                                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                                    .fill(isCurrent ? Color.white.opacity(0.24) : Color.white.opacity(0.09))
+                                                    .fill(isCurrent ? SnapLexTheme.toolbarSelection(for: colorScheme) : SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.06))
                                                     .overlay(
                                                         RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                                            .strokeBorder(isCurrent ? Color.white.opacity(0.85) : Color.clear, lineWidth: 1)
+                                                            .strokeBorder(isCurrent ? SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.65) : Color.clear, lineWidth: 1)
                                                     )
                                             )
                                         }
@@ -2165,12 +2465,11 @@ public struct SnipasteToolbarSwiftUIView: View {
                         .padding(.vertical, 6)
                         .background(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color(white: 0.10, opacity: 0.96))
+                                .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                                        .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1)
                                 )
-                                .shadow(color: .black.opacity(0.30), radius: 6, x: 0, y: 3)
                         )
                     }
                 }
@@ -2204,7 +2503,7 @@ public struct SnipasteToolbarSwiftUIView: View {
                         )
                         Text("\(Int(textFontSize))")
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme))
                             .frame(minWidth: 26)
                         InstantBlackIconButton(
                             icon: "plus",
@@ -2216,12 +2515,12 @@ public struct SnipasteToolbarSwiftUIView: View {
                         ForEach([2.0, 4.0, 8.0], id: \.self) { w in
                             Button(action: { onSelectWidth(CGFloat(w)) }) {
                                 Circle()
-                                    .fill(strokeWidth == CGFloat(w) ? Color.white : Color.white.opacity(0.45))
+                                    .fill(strokeWidth == CGFloat(w) ? SnapLexTheme.toolbarForeground(for: colorScheme) : SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.45))
                                     .frame(width: CGFloat(w) + 5, height: CGFloat(w) + 5)
                                     .frame(width: 22, height: 22)
                                     .background(
                                         Circle()
-                                            .strokeBorder(strokeWidth == CGFloat(w) ? Color.white.opacity(0.8) : Color.clear, lineWidth: 1)
+                                            .strokeBorder(strokeWidth == CGFloat(w) ? SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.8) : Color.clear, lineWidth: 1)
                                     )
                             }
                             .buttonStyle(.plain)
@@ -2247,7 +2546,7 @@ public struct SnipasteToolbarSwiftUIView: View {
                                 .overlay(
                                     Circle()
                                         .strokeBorder(
-                                            strokeColor == nsColor ? Color.white : Color.white.opacity(0.35),
+                                            strokeColor == nsColor ? SnapLexTheme.toolbarForeground(for: colorScheme) : SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.35),
                                             lineWidth: strokeColor == nsColor ? 2.2 : 1.0
                                         )
                                 )
@@ -2259,20 +2558,20 @@ public struct SnipasteToolbarSwiftUIView: View {
                 .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color(white: 0.10, opacity: 0.96))
+                        .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                                .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1)
                         )
-                        .shadow(color: .black.opacity(0.30), radius: 6, x: 0, y: 3)
                 )
             }
         }
+        .snapLexAppearance()
     }
 
     private var toolbarDivider: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.18))
+            .fill(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.18))
             .frame(width: 1, height: 18)
             .padding(.horizontal, 4)
     }

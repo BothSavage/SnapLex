@@ -6,20 +6,32 @@ import AppKit
 public struct SnapLexBrandLogoView: View {
     public var size: CGFloat = 24
     public var showBadgeBackground: Bool = true
+    public var foregroundColor: Color = .white
+    public var badgeBackgroundColor: Color = Color.white.opacity(0.10)
+    public var badgeStrokeColor: Color = Color.white.opacity(0.24)
 
-    public init(size: CGFloat = 24, showBadgeBackground: Bool = true) {
+    public init(
+        size: CGFloat = 24,
+        showBadgeBackground: Bool = true,
+        foregroundColor: Color = .white,
+        badgeBackgroundColor: Color = Color.white.opacity(0.10),
+        badgeStrokeColor: Color = Color.white.opacity(0.24)
+    ) {
         self.size = size
         self.showBadgeBackground = showBadgeBackground
+        self.foregroundColor = foregroundColor
+        self.badgeBackgroundColor = badgeBackgroundColor
+        self.badgeStrokeColor = badgeStrokeColor
     }
 
     public var body: some View {
         ZStack {
             if showBadgeBackground {
                 RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
-                    .fill(Color.white.opacity(0.10))
+                    .fill(badgeBackgroundColor)
                     .overlay(
                         RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
-                            .stroke(Color.white.opacity(0.24), lineWidth: 0.9)
+                            .stroke(badgeStrokeColor, lineWidth: 0.9)
                     )
             }
 
@@ -51,7 +63,7 @@ public struct SnapLexBrandLogoView: View {
 
                 ctx.stroke(
                     corners,
-                    with: .color(.white.opacity(0.95)),
+                    with: .color(foregroundColor.opacity(0.95)),
                     style: StrokeStyle(lineWidth: strokeW, lineCap: .round, lineJoin: .round)
                 )
 
@@ -64,7 +76,7 @@ public struct SnapLexBrandLogoView: View {
 
                 ctx.stroke(
                     prism,
-                    with: .color(.white),
+                    with: .color(foregroundColor),
                     style: StrokeStyle(lineWidth: strokeW * 1.05, lineCap: .round, lineJoin: .round)
                 )
             }
@@ -76,16 +88,16 @@ public struct SnapLexBrandLogoView: View {
 public enum SnapLexBrandLogo {
     @MainActor
     public static func makeMenuBarImage() -> NSImage {
-        let size = NSSize(width: 18, height: 18)
+        let size = NSSize(width: 21, height: 21)
         let image = NSImage(size: size, flipped: false) { rect in
             NSColor.white.setStroke()
             let w = rect.width
             let h = rect.height
-            let pad: CGFloat = 2.2
-            let arm: CGFloat = 3.8
+            let pad: CGFloat = 1.7
+            let arm: CGFloat = 4.5
 
             let path = NSBezierPath()
-            path.lineWidth = 1.55
+            path.lineWidth = 1.9
             path.lineCapStyle = .round
             path.lineJoinStyle = .round
 
@@ -127,9 +139,9 @@ public enum SnapLexBrandLogo {
 
 public struct SelectionPillBarView: View {
     @ObservedObject var vm = TranslatorViewModel.shared
+    @Environment(\.colorScheme) private var colorScheme
     var onSelectAction: (TranslationTaskMode) -> Void
     var onTriggerScreenshot: () -> Void
-    var onOpenVocabWindow: () -> Void
     var onOpenSettingsWindow: () -> Void
     var onDismiss: () -> Void
 
@@ -139,13 +151,11 @@ public struct SelectionPillBarView: View {
     public init(
         onSelectAction: @escaping (TranslationTaskMode) -> Void,
         onTriggerScreenshot: @escaping () -> Void,
-        onOpenVocabWindow: @escaping () -> Void,
         onOpenSettingsWindow: @escaping () -> Void,
         onDismiss: @escaping () -> Void
     ) {
         self.onSelectAction = onSelectAction
         self.onTriggerScreenshot = onTriggerScreenshot
-        self.onOpenVocabWindow = onOpenVocabWindow
         self.onOpenSettingsWindow = onOpenSettingsWindow
         self.onDismiss = onDismiss
     }
@@ -156,7 +166,13 @@ public struct SelectionPillBarView: View {
             Button(action: {
                 onOpenSettingsWindow()
             }) {
-                SnapLexBrandLogoView(size: 24, showBadgeBackground: true)
+                SnapLexBrandLogoView(
+                    size: 30,
+                    showBadgeBackground: true,
+                    foregroundColor: SnapLexTheme.toolbarForeground(for: colorScheme),
+                    badgeBackgroundColor: SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.045),
+                    badgeStrokeColor: SnapLexTheme.toolbarBorder(for: colorScheme)
+                )
                     .scaleEffect(logoHovered ? 1.04 : 1.0)
             }
             .buttonStyle(.plain)
@@ -170,14 +186,14 @@ public struct SelectionPillBarView: View {
 
             // Subtle vertical divider
             Rectangle()
-                .fill(Color.white.opacity(0.14))
+                .fill(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.16))
                 .frame(width: 1, height: 15)
                 .padding(.horizontal, 2)
 
             // 1. 翻译 (WeChat-style [文][A] icon)
             PillBarButton(
                 icon: "wechat:translate",
-                title: "翻译"
+                title: L10n.string("翻译")
             ) {
                 onSelectAction(.translate)
             }
@@ -185,7 +201,7 @@ public struct SelectionPillBarView: View {
             // 2. 复制 (Copy selected text)
             PillBarButton(
                 icon: copiedFeedback ? "checkmark" : "doc.on.doc",
-                title: copiedFeedback ? "已复制" : "复制"
+                title: L10n.string(copiedFeedback ? "已复制" : "复制")
             ) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(vm.inputText, forType: .string)
@@ -199,7 +215,7 @@ public struct SelectionPillBarView: View {
             // 3. 朗读 (Speak selected text)
             PillBarButton(
                 icon: "speaker.wave.2",
-                title: "朗读"
+                title: L10n.string("朗读")
             ) {
                 SystemDictionaryService.shared.speak(vm.inputText)
             }
@@ -208,14 +224,14 @@ public struct SelectionPillBarView: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(white: 0.10, opacity: 0.96))
-                .shadow(color: Color.black.opacity(0.42), radius: 14, x: 0, y: 6)
+                .fill(SnapLexTheme.toolbarBackground(for: colorScheme))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
+                .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
         )
         .padding(14)
+        .snapLexAppearance()
     }
 }
 
@@ -225,27 +241,28 @@ private struct PillBarButton: View {
     let action: () -> Void
 
     @State private var isHovered: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
                 if icon == "wechat:translate" {
                     WeChatTranslateTinyIcon()
-                        .foregroundStyle(Color.white.opacity(isHovered ? 1.0 : 0.90))
+                        .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(isHovered ? 1.0 : 0.84))
                 } else {
                     Image(systemName: icon)
                         .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(isHovered ? 1.0 : 0.90))
+                        .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(isHovered ? 1.0 : 0.84))
                 }
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(isHovered ? 1.0 : 0.92))
+                    .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(isHovered ? 1.0 : 0.90))
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovered ? Color.white.opacity(0.14) : Color.clear)
+                    .fill(isHovered ? SnapLexTheme.toolbarHover(for: colorScheme) : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -257,6 +274,8 @@ private struct PillBarButton: View {
 }
 
 private struct WeChatTranslateTinyIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 2.2, style: .continuous)
@@ -268,7 +287,7 @@ private struct WeChatTranslateTinyIcon: View {
                 .offset(x: -2.2, y: -2.2)
 
             RoundedRectangle(cornerRadius: 2.0, style: .continuous)
-                .fill(Color(white: 0.14))
+                .fill(SnapLexTheme.toolbarForeground(for: colorScheme))
                 .frame(width: 9.0, height: 9.0)
                 .offset(x: 2.6, y: 2.6)
             RoundedRectangle(cornerRadius: 2.0, style: .continuous)
@@ -277,6 +296,7 @@ private struct WeChatTranslateTinyIcon: View {
                 .offset(x: 2.6, y: 2.6)
             Text("A")
                 .font(.system(size: 6.2, weight: .bold, design: .rounded))
+                .foregroundStyle(SnapLexTheme.toolbarBackground(for: colorScheme))
                 .offset(x: 2.6, y: 2.6)
         }
         .frame(width: 15, height: 15)

@@ -1,75 +1,160 @@
 import SwiftUI
 import AppKit
 
+public enum SettingsViewSection: Equatable {
+    case all
+    case shortcuts
+    case preferences
+}
+
 public struct SettingsView: View {
     @ObservedObject var settings = AppSettings.shared
+    @ObservedObject private var shortcutRecorder = ShortcutRecorderController.shared
+    @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
+    @Environment(\.colorScheme) private var colorScheme
     @State private var axTrusted: Bool = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: false)
     @State private var isPinned: Bool = WindowManager.shared.isSettingsPinned
+    private let section: SettingsViewSection
 
-    public init() {}
+    public init(section: SettingsViewSection = .all) {
+        self.section = section
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // MARK: - Top Fixed Header Bar (Below macOS Traffic Lights + Right Pin Button)
-            HStack(alignment: .center, spacing: 14) {
-                SnapLexBrandLogoView(size: 38, showBadgeBackground: true)
+            if section == .all {
+                HStack(alignment: .center, spacing: 14) {
+                    SnapLexBrandLogoView(
+                        size: 38,
+                        showBadgeBackground: true,
+                        foregroundColor: SnapLexTheme.toolbarForeground(for: colorScheme),
+                        badgeBackgroundColor: SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.045),
+                        badgeStrokeColor: SnapLexTheme.toolbarForeground(for: colorScheme).opacity(0.14)
+                    )
 
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Text("SnapLex")
-                            .font(.system(size: 17, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.96))
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Text("SnapLex")
+                                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.primary.opacity(0.96))
 
-                        Text("PRO")
-                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.black)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1.5)
-                            .background(
-                                Capsule().fill(Color.white.opacity(0.90))
-                            )
+                            Text("PRO")
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(Capsule().fill(SnapLexTheme.toolbarForeground(for: colorScheme)))
+                        }
+
+                        Text(L10n.string("极简屏幕捕捉 · 滚动长截图 · 贴图 · 划词翻译"))
+                            .font(.system(size: 11.5, weight: .regular))
+                            .foregroundStyle(Color.primary.opacity(0.52))
                     }
 
-                    Text("极简屏幕捕捉 · 滚动长截图 · 贴图 · 划词翻译")
-                        .font(.system(size: 11.5, weight: .regular))
-                        .foregroundStyle(Color.white.opacity(0.50))
-                }
+                    Spacer()
 
-                Spacer()
-
-                // Pin Settings Window Button
-                SettingsPinButton(isPinned: isPinned) {
-                    isPinned.toggle()
-                    WindowManager.shared.setSettingsPinned(isPinned)
+                    SettingsPinButton(isPinned: isPinned) {
+                        isPinned.toggle()
+                        WindowManager.shared.setSettingsPinned(isPinned)
+                    }
                 }
+                .padding(.horizontal, 24)
+                .padding(.top, 36)
+                .padding(.bottom, 16)
+
+                Rectangle()
+                    .fill(Color.primary.opacity(0.10))
+                    .frame(height: 0.8)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 36)
-            .padding(.bottom, 16)
-
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(height: 0.8)
 
             // MARK: - Scrollable Settings Content
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 20) {
+                    if section == .all || section == .preferences {
+                        VStack(alignment: .leading, spacing: 10) {
+                        SectionHeaderLabel(title: L10n.string("主题与语言"))
+                        VStack(spacing: 0) {
+                            SettingsChoiceRow(title: L10n.string("外观模式")) {
+                                Picker("", selection: $settings.appearanceMode) {
+                                    Text(L10n.string("跟随系统")).tag(SnapLexAppearanceMode.system)
+                                    Text(L10n.string("浅色")).tag(SnapLexAppearanceMode.light)
+                                    Text(L10n.string("深色")).tag(SnapLexAppearanceMode.dark)
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: 210)
+                                .labelsHidden()
+                                .accessibilityLabel(L10n.string("外观模式"))
+                                .onChange(of: settings.appearanceMode) { _, _ in
+                                    WindowManager.shared.applyAppearance()
+                                }
+                            }
+
+                            DividerLine()
+
+                            SettingsChoiceRow(title: L10n.string("应用语言")) {
+                                Picker("", selection: $settings.appLanguage) {
+                                    Text(L10n.string("English")).tag(AppLanguage.english)
+                                    Text(L10n.string("简体中文")).tag(AppLanguage.chinese)
+                                    Text(L10n.string("繁體中文")).tag(AppLanguage.traditionalChinese)
+                                    Text(L10n.string("日本語")).tag(AppLanguage.japanese)
+                                    Text(L10n.string("한국어")).tag(AppLanguage.korean)
+                                    Text(L10n.string("Français")).tag(AppLanguage.french)
+                                    Text(L10n.string("Deutsch")).tag(AppLanguage.german)
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 210, alignment: .trailing)
+                                .labelsHidden()
+                                .accessibilityLabel(L10n.string("应用语言"))
+                            }
+
+                            DividerLine()
+
+                            SettingsChoiceRow(title: L10n.string("翻译引擎"), subtitle: L10n.string("Google 翻译需要网络；Apple 原生翻译由 macOS 提供。")) {
+                                Picker("", selection: $settings.translationEngine) {
+                                    Text(L10n.string("Google 翻译（默认）")).tag(TranslationEngine.google)
+                                    Text(L10n.string("Apple 原生翻译")).tag(TranslationEngine.apple)
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 210, alignment: .trailing)
+                                .labelsHidden()
+                                .accessibilityLabel(L10n.string("翻译引擎"))
+                                .onChange(of: settings.translationEngine) { _, _ in
+                                    let translator = TranslatorViewModel.shared
+                                    if !translator.inputText.isEmpty {
+                                        translator.rerunCurrentInput()
+                                    }
+                                }
+                            }
+                        }
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.025))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(Color.primary.opacity(0.10), lineWidth: 0.8)
+                        )
+                        }
+                    }
+
                     // Section 1: 划词触发与权限
-                    VStack(alignment: .leading, spacing: 10) {
-                        SectionHeaderLabel(title: "划词与权限")
+                    if section == .all || section == .preferences {
+                        VStack(alignment: .leading, spacing: 10) {
+                        SectionHeaderLabel(title: L10n.string("划词与权限"))
 
                         VStack(spacing: 0) {
                             MonochromeToggleRow(
-                                title: "鼠标划词自动弹出控制栏",
-                                subtitle: "选中文本松开鼠标后，在光标旁呼出 [翻译 · 复制 · 朗读] 胶囊",
+                                title: L10n.string("鼠标划词自动弹出控制栏"),
+                                subtitle: L10n.string("选中文本松开鼠标后，在光标旁呼出 [翻译 · 复制 · 朗读] 胶囊"),
                                 isOn: $settings.enableMouseHoverBar
                             )
 
                             DividerLine()
 
                             MonochromeToggleRow(
-                                title: "双击 ⌘C 呼出划词控制栏",
-                                subtitle: "无需辅助功能权限，在任意应用中连续按两次 ⌘C 即可触发",
+                                title: L10n.string("双击 ⌘C 呼出划词控制栏"),
+                                subtitle: L10n.string("无需辅助功能权限，在任意应用中连续按两次 ⌘C 即可触发"),
                                 isOn: $settings.enableDoubleCmdC
                             )
 
@@ -78,12 +163,12 @@ public struct SettingsView: View {
                             // Accessibility Status Row
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("macOS 辅助功能权限")
+                                    Text(L10n.string("macOS 辅助功能权限"))
                                         .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Color.white.opacity(0.92))
-                                    Text(axTrusted ? "已授权，支持全局鼠标划词即弹" : "未授权，开启后可支持鼠标拖拽划词自动触发")
+                                        .foregroundStyle(Color.primary.opacity(0.92))
+                                    Text(L10n.string(axTrusted ? "已授权，支持全局鼠标划词即弹" : "未授权，开启后可支持鼠标拖拽划词自动触发"))
                                         .font(.system(size: 11.5))
-                                        .foregroundStyle(Color.white.opacity(0.46))
+                                        .foregroundStyle(Color.primary.opacity(0.48))
                                 }
 
                                 Spacer()
@@ -91,24 +176,24 @@ public struct SettingsView: View {
                                 HStack(spacing: 8) {
                                     HStack(spacing: 5) {
                                         Circle()
-                                            .fill(axTrusted ? Color.white : Color.white.opacity(0.32))
+                                            .fill(axTrusted ? Color.primary : Color.primary.opacity(0.28))
                                             .frame(width: 6, height: 6)
-                                        Text(axTrusted ? "已就绪" : "未开启")
+                                        Text(L10n.string(axTrusted ? "已就绪" : "未开启"))
                                             .font(.system(size: 11.5, weight: .medium))
-                                            .foregroundStyle(Color.white.opacity(axTrusted ? 0.90 : 0.55))
+                                            .foregroundStyle(Color.primary.opacity(axTrusted ? 0.90 : 0.58))
                                     }
                                     .padding(.horizontal, 9)
                                     .padding(.vertical, 4)
                                     .background(
                                         Capsule()
-                                            .fill(Color.white.opacity(0.06))
+                                            .fill(Color.primary.opacity(0.045))
                                             .overlay(
-                                                Capsule().stroke(Color.white.opacity(0.12), lineWidth: 0.8)
+                                                Capsule().stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
                                             )
                                     )
 
                                     if !axTrusted {
-                                        MonochromeActionPillButton(title: "去授权") {
+                                        MonochromeActionPillButton(title: L10n.string("去授权")) {
                                             axTrusted = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: true)
                                         }
                                     }
@@ -120,60 +205,122 @@ public struct SettingsView: View {
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 12)
+
+                            DividerLine()
+
+                            MonochromeToggleRow(
+                                title: L10n.string("登录时启动 SnapLex"),
+                                subtitle: L10n.string("登录 macOS 后自动启动 SnapLex"),
+                                isOn: Binding(
+                                    get: { launchAtLogin.isEnabled },
+                                    set: { launchAtLogin.setEnabled($0) }
+                                )
+                            )
+                            if let error = launchAtLogin.errorMessage {
+                                Text(error)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.red)
+                                    .padding(.horizontal, 14)
+                                    .padding(.bottom, 8)
+                            }
                         }
                         .background(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.white.opacity(0.04))
+                                .fill(Color.primary.opacity(0.025))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                                .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
                         )
+                        }
                     }
 
                     // Section 2: 全局快捷键一览
-                    VStack(alignment: .leading, spacing: 10) {
-                        SectionHeaderLabel(title: "全局快捷键")
+                    if section == .all || section == .shortcuts {
+                        VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            SectionHeaderLabel(title: L10n.string("快捷键"))
+                            Spacer()
+                            Button(L10n.string("恢复默认快捷键")) {
+                                settings.resetShortcutBindings()
+                                shortcutRecorder.cancelCapture()
+                            }
+                            .font(.system(size: 10.5, weight: .medium))
+                            .buttonStyle(.plain)
+                        }
 
                         VStack(spacing: 0) {
-                            ShortcutRow(
-                                title: "区域截图 · 标注 · 滚动长截图 · OCR",
-                                keys: ["F1", "⌥ S"]
-                            )
-                            DividerLine()
-                            ShortcutRow(
-                                title: "屏幕贴图 (将选区或剪贴板钉在桌面)",
-                                keys: ["F3", "⌥ P"]
-                            )
-                            DividerLine()
-                            ShortcutRow(
-                                title: "恢复上一个关闭的贴图",
-                                keys: ["⇧ F3"]
-                            )
-                            DividerLine()
-                            ShortcutRow(
-                                title: "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)",
-                                keys: ["⌥ R"]
-                            )
-                            DividerLine()
-                            ShortcutRow(
-                                title: "划词直接翻译",
-                                keys: ["⌥ A"]
-                            )
-                            DividerLine()
-                            ShortcutRow(
-                                title: "打开 / 隐藏翻译卡片",
-                                keys: ["⌥ D"]
-                            )
+                            ForEach(Array(GlobalShortcut.allCases.enumerated()), id: \.element.id) { index, shortcut in
+                                ShortcutRecorderRow(shortcut: shortcut)
+                                if index < GlobalShortcut.allCases.count - 1 {
+                                    DividerLine()
+                                }
+                            }
+                            if let error = shortcutRecorder.errorMessage {
+                                Text(error)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 8)
+                            }
                         }
                         .background(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.white.opacity(0.04))
+                                .fill(Color.primary.opacity(0.025))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                                .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
                         )
+                        }
+                    }
+
+                    if section == .all || section == .preferences {
+                        VStack(alignment: .leading, spacing: 10) {
+                        SectionHeaderLabel(title: L10n.string("翻译记录与截图"))
+                        VStack(spacing: 0) {
+                            MonochromeToggleRow(
+                                title: L10n.string("自动记录划词翻译"),
+                                subtitle: L10n.string("将鼠标划词、快捷键和双击复制触发的翻译加入记录"),
+                                isOn: $settings.recordSelectionTranslations
+                            )
+                            DividerLine()
+                            MonochromeToggleRow(
+                                title: L10n.string("自动记录截图翻译"),
+                                subtitle: L10n.string("将截图识别并翻译的内容加入记录"),
+                                isOn: $settings.recordScreenshotTranslations
+                            )
+                            DividerLine()
+                            ScreenshotRetentionRow(limit: $settings.screenshotHistoryLimit)
+                            DividerLine()
+                            HStack(spacing: 8) {
+                                Button {
+                                    WindowManager.shared.showTranslationHistoryWindow()
+                                } label: {
+                                    Label(L10n.string("查看翻译记录"), systemImage: "chart.bar.xaxis")
+                                }
+                                Button {
+                                    WindowManager.shared.showScreenshotHistoryWindow()
+                                } label: {
+                                    Label(L10n.string("管理截图记录"), systemImage: "photo.on.rectangle")
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 11)
+                        }
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.primary.opacity(0.025))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
+                        )
+                        }
                     }
                 }
                 .padding(.horizontal, 24)
@@ -181,12 +328,63 @@ public struct SettingsView: View {
                 .padding(.bottom, 26)
             }
         }
-        .frame(minWidth: 520, idealWidth: 520, maxWidth: .infinity, minHeight: 540, idealHeight: 560, maxHeight: .infinity)
-        .background(Color(white: 0.08))
-        .environment(\.colorScheme, .dark)
+        .frame(
+            minWidth: section == .all ? 520 : 760,
+            idealWidth: section == .all ? 520 : 900,
+            maxWidth: .infinity,
+            minHeight: section == .all ? 540 : 620,
+            idealHeight: section == .all ? 560 : 720,
+            maxHeight: .infinity
+        )
+        .background(SnapLexTheme.toolbarBackground(for: colorScheme))
+        .snapLexAppearance()
         .onAppear {
             isPinned = WindowManager.shared.isSettingsPinned
             axTrusted = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: false)
+            launchAtLogin.refreshStatus()
+        }
+    }
+}
+
+private struct SettingsChoiceRow<Control: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    @ViewBuilder let control: () -> Control
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                labelContent
+                    .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 8)
+                control()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+
+            VStack(alignment: .leading, spacing: 10) {
+                labelContent
+                control()
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+        }
+    }
+
+    private var labelContent: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -195,16 +393,17 @@ private struct SettingsPinButton: View {
     let isPinned: Bool
     let action: () -> Void
     @State private var isHovered: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: isPinned ? "pin.fill" : "pin")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(isPinned ? Color.black : Color.white.opacity(isHovered ? 0.95 : 0.72))
-                Text(isPinned ? "已置顶" : "置顶")
+                    .foregroundStyle(isPinned ? (colorScheme == .dark ? Color.black : Color.white) : Color.primary.opacity(isHovered ? 0.92 : 0.72))
+                Text(L10n.string(isPinned ? "已置顶" : "置顶"))
                     .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(isPinned ? Color.black : Color.white.opacity(isHovered ? 0.95 : 0.72))
+                    .foregroundStyle(isPinned ? (colorScheme == .dark ? Color.black : Color.white) : Color.primary.opacity(isHovered ? 0.92 : 0.72))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -212,13 +411,13 @@ private struct SettingsPinButton: View {
                 Capsule(style: .continuous)
                     .fill(
                         isPinned
-                            ? Color.white.opacity(0.92)
-                            : Color.white.opacity(isHovered ? 0.14 : 0.07)
+                            ? SnapLexTheme.toolbarForeground(for: colorScheme)
+                            : Color.primary.opacity(isHovered ? 0.08 : 0.045)
                     )
             )
             .overlay(
                 Capsule(style: .continuous)
-                    .stroke(Color.white.opacity(isPinned ? 0.0 : 0.14), lineWidth: 0.8)
+                    .stroke(SnapLexTheme.toolbarBorder(for: colorScheme).opacity(isPinned ? 0 : 1), lineWidth: 0.8)
             )
         }
         .buttonStyle(.plain)
@@ -228,11 +427,12 @@ private struct SettingsPinButton: View {
 
 private struct SectionHeaderLabel: View {
     let title: String
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Text(title)
             .font(.system(size: 11.5, weight: .semibold))
-            .foregroundStyle(Color.white.opacity(0.45))
+            .foregroundStyle(Color.primary.opacity(0.52))
             .tracking(0.6)
             .padding(.leading, 2)
     }
@@ -241,7 +441,7 @@ private struct SectionHeaderLabel: View {
 private struct DividerLine: View {
     var body: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.07))
+            .fill(Color.primary.opacity(0.085))
             .frame(height: 0.8)
             .padding(.horizontal, 14)
     }
@@ -257,10 +457,10 @@ private struct MonochromeToggleRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.92))
+                    .foregroundStyle(Color.primary.opacity(0.92))
                 Text(subtitle)
                     .font(.system(size: 11.5))
-                    .foregroundStyle(Color.white.opacity(0.46))
+                    .foregroundStyle(Color.primary.opacity(0.50))
             }
 
             Spacer()
@@ -274,6 +474,7 @@ private struct MonochromeToggleRow: View {
 
 private struct MonochromeSwitch: View {
     @Binding var isOn: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: {
@@ -283,15 +484,15 @@ private struct MonochromeSwitch: View {
         }) {
             ZStack(alignment: isOn ? .trailing : .leading) {
                 Capsule(style: .continuous)
-                    .fill(isOn ? Color.white.opacity(0.92) : Color.white.opacity(0.12))
+                    .fill(isOn ? SnapLexTheme.toolbarForeground(for: colorScheme) : Color.primary.opacity(0.12))
                     .frame(width: 36, height: 20)
                     .overlay(
                         Capsule(style: .continuous)
-                            .stroke(Color.white.opacity(isOn ? 0.0 : 0.18), lineWidth: 0.8)
+                            .stroke(SnapLexTheme.toolbarBorder(for: colorScheme).opacity(isOn ? 0 : 1), lineWidth: 0.8)
                     )
 
                 Circle()
-                    .fill(isOn ? Color(white: 0.08) : Color.white.opacity(0.65))
+                    .fill(isOn ? (colorScheme == .dark ? Color.black : Color.white) : Color.primary.opacity(0.45))
                     .frame(width: 16, height: 16)
                     .padding(.horizontal, 2)
             }
@@ -300,38 +501,82 @@ private struct MonochromeSwitch: View {
     }
 }
 
-private struct ShortcutRow: View {
-    let title: String
-    let keys: [String]
+private struct ShortcutRecorderRow: View {
+    let shortcut: GlobalShortcut
+    @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var recorder = ShortcutRecorderController.shared
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 10) {
-            Text(title)
-                .font(.system(size: 12.5, weight: .regular))
-                .foregroundStyle(Color.white.opacity(0.84))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n.string(shortcut.titleKey))
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(Color.primary.opacity(0.86))
+                if shortcut == .screenshotOptionS || shortcut == .pinOptionP {
+                    Text(L10n.string("备用快捷键"))
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             Spacer()
 
-            HStack(spacing: 6) {
-                ForEach(keys, id: \.self) { key in
-                    Text(key)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.88))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .stroke(Color.white.opacity(0.16), lineWidth: 0.8)
-                        )
+            Button {
+                if recorder.activeShortcut == shortcut {
+                    recorder.cancelCapture()
+                } else {
+                    recorder.beginCapturing(shortcut)
                 }
+            } label: {
+                Text(recorder.activeShortcut == shortcut
+                    ? L10n.string("按下新快捷键…")
+                    : settings.shortcutBinding(for: shortcut).displayString)
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.primary.opacity(0.88))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(recorder.activeShortcut == shortcut
+                                ? Color.accentColor.opacity(0.16)
+                                : Color.primary.opacity(0.045))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
+                    )
             }
+            .buttonStyle(.plain)
+            .help(L10n.string("点击后按下新的快捷键；按 Esc 取消"))
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9.5)
+        .padding(.vertical, 7)
+    }
+}
+
+private struct ScreenshotRetentionRow: View {
+    @Binding var limit: Int
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L10n.string("截图记录保留数量"))
+                    .font(.system(size: 13, weight: .medium))
+                Text(L10n.string("自动保存最近截图，超出数量后删除最旧图片"))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Stepper(value: $limit, in: 1...1000, step: 10) {
+                Text("\(limit)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .frame(minWidth: 38, alignment: .trailing)
+            }
+            .fixedSize()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
     }
 }
 
@@ -339,17 +584,18 @@ private struct MonochromeActionPillButton: View {
     let title: String
     let action: () -> Void
     @State private var isHovered = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(Color.black)
+                .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
                 .background(
                     Capsule()
-                        .fill(Color.white.opacity(isHovered ? 1.0 : 0.88))
+                        .fill(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(isHovered ? 1 : 0.88))
                 )
         }
         .buttonStyle(.plain)
@@ -366,11 +612,11 @@ private struct MonochromeIconPillButton: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(isHovered ? 0.95 : 0.65))
+                .foregroundStyle(Color.primary.opacity(isHovered ? 0.88 : 0.66))
                 .frame(width: 24, height: 24)
                 .background(
                     Circle()
-                        .fill(Color.white.opacity(isHovered ? 0.14 : 0.07))
+                        .fill(Color.primary.opacity(isHovered ? 0.085 : 0.045))
                 )
         }
         .buttonStyle(.plain)
