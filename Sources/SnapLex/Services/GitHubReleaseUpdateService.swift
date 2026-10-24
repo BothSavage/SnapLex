@@ -1,6 +1,123 @@
 import Foundation
 import Combine
 
+/// A SemVer 2.0 version used for comparing the app bundle version with GitHub release tags.
+/// Release workflow tags are restricted to MAJOR.MINOR.PATCH, but parsing prereleases here
+/// keeps local development builds and future release channels well-defined.
+struct GitHubReleaseVersion: Equatable, Comparable {
+    private struct Identifier: Equatable {
+        let value: String
+        var isNumeric: Bool { value.allSatisfy(\.isNumber) }
+    }
+
+    let major: UInt64
+    let minor: UInt64
+    let patch: UInt64
+    private let prerelease: [Identifier]?
+
+    var normalized: String {
+        let core = "\(major).\(minor).\(patch)"
+        guard let prerelease else { return core }
+        return core + "-" + prerelease.map(\.value).joined(separator: ".")
+    }
+
+    init?(tag: String) {
+        var value = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.first == "v" || value.first == "V" {
+            value.removeFirst()
+        }
+
+        let buildParts = value.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
+        guard buildParts.count <= 2 else { return nil }
+        if buildParts.count == 2 {
+            guard !buildParts[1].isEmpty,
+                  Self.isValidIdentifierList(String(buildParts[1]), separator: ".") else { return nil }
+        }
+
+        let semanticVersion = String(buildParts[0])
+        let versionParts = semanticVersion.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        let coreParts = versionParts[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard coreParts.count == 3,
+              let major = Self.numericCoreComponent(coreParts[0]),
+              let minor = Self.numericCoreComponent(coreParts[1]),
+              let patch = Self.numericCoreComponent(coreParts[2]) else { return nil }
+
+        var parsedPrerelease: [Identifier]?
+        if versionParts.count == 2 {
+            guard !versionParts[1].isEmpty else { return nil }
+            let identifiers = versionParts[1].split(separator: ".", omittingEmptySubsequences: false)
+            guard !identifiers.isEmpty else { return nil }
+            var values: [Identifier] = []
+            for identifier in identifiers {
+                let text = String(identifier)
+                guard Self.isValidIdentifier(text),
+                      !(text.count > 1 && text.first == "0" && text.allSatisfy(\.isNumber)) else { return nil }
+                values.append(Identifier(value: text))
+            }
+            parsedPrerelease = values
+        }
+
+        self.major = major
+        self.minor = minor
+        self.patch = patch
+        self.prerelease = parsedPrerelease
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.major != rhs.major { return lhs.major < rhs.major }
+        if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
+        if lhs.patch != rhs.patch { return lhs.patch < rhs.patch }
+
+        switch (lhs.prerelease, rhs.prerelease) {
+        case (nil, nil):
+            return false
+        case (nil, .some):
+            return false // A stable version has higher precedence than its prerelease.
+        case (.some, nil):
+            return true
+        case let (.some(left), .some(right)):
+            for index in 0..<min(left.count, right.count) {
+                let leftIdentifier = left[index]
+                let rightIdentifier = right[index]
+                if leftIdentifier == rightIdentifier { continue }
+                switch (leftIdentifier.isNumeric, rightIdentifier.isNumeric) {
+                case (true, true):
+                    if leftIdentifier.value.count != rightIdentifier.value.count {
+                        return leftIdentifier.value.count < rightIdentifier.value.count
+                    }
+                    return leftIdentifier.value < rightIdentifier.value
+                case (true, false):
+                    return true
+                case (false, true):
+                    return false
+                case (false, false):
+                    return leftIdentifier.value < rightIdentifier.value
+                }
+            }
+            return left.count < right.count
+        }
+    }
+
+    private static func numericCoreComponent(_ value: Substring) -> UInt64? {
+        guard !value.isEmpty,
+              !(value.count > 1 && value.first == "0"),
+              value.allSatisfy(\.isNumber) else { return nil }
+        return UInt64(value)
+    }
+
+    private static func isValidIdentifierList(_ value: String, separator: Character) -> Bool {
+        let identifiers = value.split(separator: separator, omittingEmptySubsequences: false)
+        return !identifiers.isEmpty && identifiers.allSatisfy { isValidIdentifier(String($0)) }
+    }
+
+    private static func isValidIdentifier(_ value: String) -> Bool {
+        !value.isEmpty && value.unicodeScalars.allSatisfy {
+            (48...57).contains($0.value) || (65...90).contains($0.value) ||
+            (97...122).contains($0.value) || $0.value == 45
+        }
+    }
+}
+
 @MainActor
 public final class GitHubReleaseUpdateService: ObservableObject {
     public enum State: Equatable {
@@ -28,9 +145,18 @@ public final class GitHubReleaseUpdateService: ObservableObject {
 
     private let owner = "BothSavage"
     private let repository = "SnapLex"
+    private let session: URLSession
+    private let currentVersionOverride: String?
+
+    init(session: URLSession = .shared, currentVersion: String? = nil) {
+        self.session = session
+        self.currentVersionOverride = currentVersion
+    }
 
     public var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+        currentVersionOverride
+            ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? "0.1.0"
     }
 
     public func checkForUpdates() async {
@@ -46,7 +172,7 @@ public final class GitHubReleaseUpdateService: ObservableObject {
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 state = .failed(L10n.string("GitHub 返回了无效响应"))
                 return
@@ -61,10 +187,15 @@ public final class GitHubReleaseUpdateService: ObservableObject {
             }
 
             let release = try JSONDecoder().decode(Release.self, from: data)
-            let version = Self.displayVersion(release.tagName)
-            if Self.isNewer(version, than: currentVersion) {
+            guard release.htmlURL.scheme == "https",
+                  release.htmlURL.host == "github.com",
+                  let version = GitHubReleaseVersion(tag: release.tagName) else {
+                state = .failed(L10n.string("GitHub 返回了无效响应"))
+                return
+            }
+            if let installedVersion = GitHubReleaseVersion(tag: currentVersion), version > installedVersion {
                 state = .updateAvailable(
-                    version: version,
+                    version: version.normalized,
                     notes: release.body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
                     releaseURL: release.htmlURL
                 )
@@ -74,33 +205,5 @@ public final class GitHubReleaseUpdateService: ObservableObject {
         } catch {
             state = .failed(L10n.format("检查更新失败：%@", error.localizedDescription))
         }
-    }
-
-    private static func displayVersion(_ tag: String) -> String {
-        tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
-    }
-
-    private static func isNewer(_ candidate: String, than current: String) -> Bool {
-        let candidateParts = numericVersionParts(candidate)
-        let currentParts = numericVersionParts(current)
-        guard !candidateParts.isEmpty, !currentParts.isEmpty else { return false }
-        for index in 0..<max(candidateParts.count, currentParts.count) {
-            let lhs = index < candidateParts.count ? candidateParts[index] : 0
-            let rhs = index < currentParts.count ? currentParts[index] : 0
-            if lhs != rhs { return lhs > rhs }
-        }
-        return false
-    }
-
-    private static func numericVersionParts(_ version: String) -> [Int] {
-        let core = version.split(separator: "-", maxSplits: 1).first.map(String.init) ?? version
-        let parts = core.split(separator: ".")
-        guard !parts.isEmpty else { return [] }
-        var values: [Int] = []
-        for part in parts {
-            guard let value = Int(part) else { return [] }
-            values.append(value)
-        }
-        return values
     }
 }

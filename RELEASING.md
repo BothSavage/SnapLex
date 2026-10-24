@@ -1,6 +1,8 @@
 # GitHub Releases 配置
 
-应用内更新检查会读取 `BothSavage/SnapLex` 的最新正式版 Release。它只检查版本并打开发布页面；安装更新时由用户下载并替换应用，不会在后台覆盖应用。
+应用内更新检查会读取 `BothSavage/SnapLex` 的最新正式版 Release。它只检查版本并打开发布页面；安装更新时由用户下载并替换应用，不会在后台覆盖应用。普通 Git tag 不会显示为可更新版本，必须先发布正式版 Release。
+
+仓库的 `.github/workflows/ci.yml` 会在 `main` 分支推送和 Pull Request 上运行 `swift test`。发布工作流只在推送 `vMAJOR.MINOR.PATCH` tag 时运行。
 
 ## 启用自动发布
 
@@ -15,7 +17,17 @@
 | `APPLE_APP_SPECIFIC_PASSWORD` | 该 Apple Account 的 app-specific password |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
 
-密钥只应填入 GitHub Actions Secrets，不要提交到仓库、README、issue 或工作流文件。创建一个格式为 `vMAJOR.MINOR.PATCH` 的 tag（例如 `v1.2.3`）并推送后，GitHub Actions 会构建当前 runner 架构的应用、签名并公证 DMG，然后创建正式版 Release。应用内的“检查更新”随后会从 GitHub 发现它。
+密钥只应填入 GitHub Actions Secrets，不要提交到仓库、README、issue 或工作流文件。
+
+首次正式发布步骤：
+
+1. 在 **Settings → Secrets and variables → Actions** 添加上表中的六个 Secret。
+2. 将代码推送到 `main`，确认 `macOS CI` 检查通过。
+3. 创建并推送一个三段式版本 tag，例如 `v1.2.3`。
+4. GitHub Actions 会构建当前 runner 架构的应用、签名并公证 DMG，然后创建正式版 Release。
+5. 用户在应用内点“检查更新”后，会看到新版本和说明，并可打开 Release 页面下载 DMG。
+
+发布正式版之前，检查器会提示 GitHub 尚无正式版；这属于正常状态。
 
 ## 手动发布
 

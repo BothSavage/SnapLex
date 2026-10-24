@@ -2,6 +2,8 @@
 
 [简体中文](README.md) · **English**
 
+<img src="Assets/AppIcon-1024.png" width="104" alt="SnapLex app icon">
+
 # SnapLex
 
 ### Capture, annotate, pin, and translate — in one native macOS app
@@ -12,6 +14,7 @@ A native macOS productivity app that turns on-screen content into information yo
 
 [![macOS 15+](https://img.shields.io/badge/macOS-15%2B-111111?logo=apple)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.10%2B-F05138?logo=swift&logoColor=white)](https://swift.org/)
+[![macOS CI](https://github.com/BothSavage/SnapLex/actions/workflows/ci.yml/badge.svg)](https://github.com/BothSavage/SnapLex/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
@@ -44,7 +47,7 @@ SnapLex brings screen capture and language tools together in a native macOS app.
 
 - The interface supports Simplified Chinese, Traditional Chinese, English, Japanese, Korean, French, and German.
 - Customize global shortcuts, launch at login, and choose separately which translation types are saved.
-- Check GitHub Releases for the latest stable version and read its release notes in the app.
+- Check GitHub Releases for the latest stable version and read its release notes in the app. Users confirm downloads and installation from the release page; updates never silently replace the app.
 
 ## Install and run
 

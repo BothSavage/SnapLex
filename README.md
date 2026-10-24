@@ -2,6 +2,8 @@
 
 **简体中文** · [English](README.en.md)
 
+<img src="Assets/AppIcon-1024.png" width="104" alt="SnapLex 应用图标">
+
 # SnapLex
 
 ### 截图、标注、贴图与划词翻译，一套顺手完成
@@ -12,6 +14,7 @@
 
 [![macOS 15+](https://img.shields.io/badge/macOS-15%2B-111111?logo=apple)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.10%2B-F05138?logo=swift&logoColor=white)](https://swift.org/)
+[![macOS CI](https://github.com/BothSavage/SnapLex/actions/workflows/ci.yml/badge.svg)](https://github.com/BothSavage/SnapLex/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
@@ -44,7 +47,7 @@ SnapLex 将屏幕捕捉和语言学习工具放在同一个原生 macOS 应用�
 
 - 支持简体中文、繁体中文、English、日语、韩语、法语和德语界面。
 - 可自定义全局快捷键、设置登录时启动，并分别控制两类翻译是否写入记录。
-- 应用内可检查 GitHub Releases 上的最新正式版，并查看版本说明。
+- 应用内可检查 GitHub Releases 上的最新正式版并查看版本说明；用户从发布页确认下载和安装，不会静默覆盖应用。
 
 ## 安装与运行
 
