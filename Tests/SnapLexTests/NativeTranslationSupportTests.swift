@@ -57,13 +57,17 @@ final class NativeTranslationSupportTests: XCTestCase {
         }
     }
 
-    func testNativeTranslationSupportsChineseEnglishPairInBothDirections() async {
+    func testNativeTranslationSupportsChineseEnglishPairInBothDirections() async throws {
         let availability = LanguageAvailability()
         let chinese = Locale.Language(identifier: "zh")
         let english = Locale.Language(identifier: "en")
 
         let chineseToEnglish = await availability.status(from: chinese, to: english)
         let englishToChinese = await availability.status(from: english, to: chinese)
+
+        guard chineseToEnglish != .unsupported, englishToChinese != .unsupported else {
+            throw XCTSkip("This macOS host does not expose the Apple Translation Chinese-English pair.")
+        }
 
         XCTAssertNotEqual(chineseToEnglish, .unsupported)
         XCTAssertNotEqual(englishToChinese, .unsupported)
