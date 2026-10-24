@@ -122,8 +122,10 @@ public final class SnipasteCaptureManager: NSObject {
 
         isCapturing = true
         window.updateScreenFrame(screenFrame)
+        window.level = .screenSaver
         window.canvasView.beginSession(
             screenFrame: screenFrame,
+            visibleFrame: screen.visibleFrame,
             detectedWindows: detectedWindows,
             openRecordingSubbar: openRecordingSubbar
         )
@@ -258,8 +260,8 @@ public final class SnipasteOverlayWindow: NSPanel {
             backing: .buffered,
             defer: false
         )
-        self.level = .screenSaver
         self.isFloatingPanel = true
+        self.level = .screenSaver
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.backgroundColor = .clear
         self.isOpaque = false
@@ -414,13 +416,24 @@ public final class SnipasteCaptureCanvasView: NSView {
 
     override public var acceptsFirstResponder: Bool { true }
 
+    private var dockBottomInset: CGFloat = 0
+    private var menuBarTopInset: CGFloat = 38
+
     public func beginSession(
         screenFrame: NSRect,
+        visibleFrame: NSRect? = nil,
         detectedWindows: [DetectedWindowInfo],
         openRecordingSubbar: Bool = false
     ) {
         self.frame = NSRect(origin: .zero, size: screenFrame.size)
         self.screenOrigin = screenFrame.origin
+        if let vis = visibleFrame {
+            self.dockBottomInset = max(0, vis.minY - screenFrame.minY)
+            self.menuBarTopInset = max(28, screenFrame.maxY - vis.maxY)
+        } else {
+            self.dockBottomInset = 0
+            self.menuBarTopInset = 38
+        }
         self.detectedWindows = detectedWindows
         self.cgImage = nil
         self.backgroundLayerProvider()?.contents = nil
@@ -537,37 +550,46 @@ public final class SnipasteCaptureCanvasView: NSView {
 
         // Top 30pt of SnipasteToolbarSwiftUIView is transparent headroom for hover tooltips.
         let tooltipHeadroom: CGFloat = 30
-        let visibleHeight = max(36, fit.height - tooltipHeadroom)
+        let visibleHeight = max(40, fit.height - tooltipHeadroom)
         let gap: CGFloat = 10
 
-        // Safe vertical bounds inside the screen (above bottom edge and below top Menu Bar / Notch)
-        let minSafeY: CGFloat = 18
-        let maxSafeY: CGFloat = max(minSafeY + fit.height, bounds.height - 42)
+        // Account for both the macOS Dock/bottom edge AND the full toolbar height (including sub-toolbar expansion room)
+        // so the toolbar flips above the selection BEFORE it ever gets occluded or cramped at the bottom edge!
+        let minSafeBottomY: CGFloat = max(24, dockBottomInset + 14)
+        let reservedToolbarHeight: CGFloat = max(visibleHeight, 84)
+        let maxSafeTopY: CGFloat = max(minSafeBottomY + fit.height, bounds.height - max(menuBarTopInset, 38) - 6)
 
         // Always horizontally center the toolbar relative to selectionRect, clamped on-screen
         var x = round(selectionRect.midX - fit.width / 2)
         x = max(16, min(x, bounds.width - fit.width - 16))
 
         let belowY = round(selectionRect.minY - visibleHeight - gap)
-        let aboveY = round(selectionRect.maxY + gap)
+        let hasRoomBelowForFullToolbar = (selectionRect.minY - reservedToolbarHeight - gap) >= minSafeBottomY
+
+        // When placed above selectionRect, sit above the top-left dimension badge (`rect.maxY + 6 ..< rect.maxY + 30`)
+        // so the toolbar never occludes the dimension badge or the top border of selectionRect.
+        let aboveBadgeGap: CGFloat = 34
+        let aboveY = round(selectionRect.maxY + aboveBadgeGap)
 
         var y: CGFloat
-        if belowY >= minSafeY {
-            // 1. Enough room on screen BELOW selectionRect -> place outside below
+        if hasRoomBelowForFullToolbar && belowY >= minSafeBottomY {
+            // 1. Plenty of room below selectionRect (accounting for full toolbar height + Dock) -> place outside below
             y = belowY
-        } else if aboveY + fit.height <= maxSafeY {
-            // 2. Enough room on screen ABOVE selectionRect (below menu bar) -> place outside above
+        } else if aboveY + fit.height <= maxSafeTopY {
+            // 2. Bottom edge is getting close -> flip cleanly ABOVE selectionRect & dimension badge
             y = aboveY
+        } else if round(selectionRect.maxY + gap) + fit.height <= maxSafeTopY {
+            // 2b. Tight top clearance -> place right above selectionRect
+            y = round(selectionRect.maxY + gap)
         } else {
-            // 3. Selected window/region spans nearly the full screen height (e.g. from Dock to Menu Bar),
-            // leaving no room outside top or bottom -> place cleanly inside the bottom-center of the window
-            // so the toolbar and window selector are 100% visible on-screen!
-            y = round(max(minSafeY + 10, selectionRect.minY + 18))
+            // 3. Selected window/region spans nearly the full screen height (from Dock to Menu Bar),
+            // leaving no room outside top or bottom -> place cleanly inside the bottom-center above Dock
+            y = round(max(minSafeBottomY + 12, selectionRect.minY + 18))
         }
 
         // Final strict on-screen clamp so the toolbar or window selector can NEVER go off-screen
         x = max(16, min(x, bounds.width - fit.width - 16))
-        y = max(minSafeY, min(y, maxSafeY - fit.height))
+        y = max(minSafeBottomY, min(y, maxSafeTopY - fit.height))
         hosting.frame.origin = CGPoint(x: x, y: y)
     }
 
@@ -1290,9 +1312,17 @@ public final class SnipasteCaptureCanvasView: NSView {
         let pt = convert(event.locationInWindow, from: nil)
         mouseLocationInView = pt
 
-        // Never intercept clicks aimed at the floating toolbar!
-        if let tb = toolbarHostingView, !tb.isHidden, tb.frame.insetBy(dx: -6, dy: -6).contains(pt) {
-            return
+        // Never intercept clicks aimed at the visible floating toolbar (ignore top 30pt transparent tooltip headroom)!
+        if let tb = toolbarHostingView, !tb.isHidden {
+            let visibleRect = CGRect(
+                x: tb.frame.minX,
+                y: tb.frame.minY,
+                width: tb.frame.width,
+                height: max(38, tb.frame.height - 30)
+            )
+            if visibleRect.insetBy(dx: -4, dy: -4).contains(pt) {
+                return
+            }
         }
 
         // In Window Recording mode (`窗口录制`), clicking any open window on screen selects that window!

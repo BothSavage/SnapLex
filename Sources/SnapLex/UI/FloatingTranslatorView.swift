@@ -25,13 +25,13 @@ public struct FloatingTranslatorView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
+        VStack(alignment: .leading, spacing: 12) {
             // MARK: - Top Drag Handle
             HStack {
                 Spacer()
                 Capsule()
                     .fill(Color.white.opacity(0.22))
-                    .frame(width: 28, height: 3)
+                    .frame(width: 30, height: 3)
                 Spacer()
             }
             .padding(.top, 6)
@@ -43,12 +43,12 @@ public struct FloatingTranslatorView: View {
                 HStack(spacing: 6) {
                     Text(vm.sourceLangLabel)
                         .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.72))
+                        .foregroundStyle(Color.white.opacity(0.76))
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 10)
-                .frame(height: 30)
+                .padding(.horizontal, 11)
+                .frame(height: 32)
                 .frame(maxWidth: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -56,14 +56,14 @@ public struct FloatingTranslatorView: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                        .stroke(Color.white.opacity(0.11), lineWidth: 0.8)
                 )
 
                 Image(systemName: "arrow.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.45))
 
-                // Target Language Dropdown Pill
+                // Target Language Dropdown Pill (wrapped outside Menu so border & background always render)
                 Menu {
                     ForEach(AppSettings.targetLanguages, id: \.label) { lang in
                         Button(action: {
@@ -81,27 +81,29 @@ public struct FloatingTranslatorView: View {
                     HStack(spacing: 6) {
                         Text(vm.targetLangLabel)
                             .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.92))
+                            .foregroundStyle(Color.white.opacity(0.94))
                             .lineLimit(1)
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.55))
                     }
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .frame(maxWidth: .infinity)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Color.white.opacity(0.09))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
-                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                .padding(.horizontal, 11)
+                .frame(height: 32)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
+                )
 
                 // Pin Window Button
                 ToolbarIconButton(
@@ -156,104 +158,18 @@ public struct FloatingTranslatorView: View {
                 )
             }
 
-            // MARK: - Main Translation Body (Scrollable)
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 9) {
-                    if vm.showOriginalText || vm.capturedImage != nil {
-                        VStack(alignment: .leading, spacing: 6) {
-                            if let img = vm.capturedImage {
-                                Image(nsImage: img)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxHeight: 84)
-                                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 7)
-                                            .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
-                                    )
-                            }
-                            if vm.showOriginalText {
-                                TextField("输入或修改原文后按回车重译...", text: $vm.inputText, axis: .vertical)
-                                    .textFieldStyle(.plain)
-                                    .font(.system(size: 12.5))
-                                    .foregroundStyle(Color.white.opacity(0.72))
-                                    .lineLimit(1...5)
-                                    .padding(8)
-                                    .background(Color.white.opacity(0.06))
-                                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 7)
-                                            .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
-                                    )
-                                    .onSubmit {
-                                        vm.rerunCurrentInput()
-                                    }
-                            }
-                        }
-                    }
+            // MARK: - Full Auto-Expanding Translation Content (Displays all content without clipping!)
+            ViewThatFits(in: .vertical) {
+                translationContentStack
+                    .fixedSize(horizontal: false, vertical: true)
 
-                    // Phonetic badge if single word
-                    if !vm.phonetic.isEmpty {
-                        HStack(spacing: 6) {
-                            Text(vm.inputText)
-                                .font(.system(size: 13.5, weight: .semibold))
-                                .foregroundStyle(Color.white.opacity(0.95))
-                            Text(vm.phonetic)
-                                .font(.system(size: 12.5, design: .monospaced))
-                                .foregroundStyle(Color.white.opacity(0.60))
-                        }
-                    }
-
-                    // Primary Translated Output
-                    if let err = vm.errorMessage {
-                        Text("⚠️ \(err)")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.white.opacity(0.78))
-                            .textSelection(.enabled)
-                    } else if vm.aiOutput.isEmpty && vm.isStreaming {
-                        HStack(spacing: 7) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .colorScheme(.dark)
-                            Text("正在翻译...")
-                                .font(.system(size: 13.5))
-                                .foregroundStyle(Color.white.opacity(0.55))
-                        }
-                        .padding(.vertical, 6)
-                    } else {
-                        Text(vm.aiOutput.isEmpty ? vm.systemDefinition : vm.aiOutput)
-                            .font(.system(size: 14.5, weight: .regular))
-                            .foregroundStyle(Color.white.opacity(0.94))
-                            .lineSpacing(5)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 2)
-                    }
-
-                    // Expandable macOS System Dictionary Detail
-                    if vm.showSystemDictDetail && !vm.systemDefinition.isEmpty && !vm.aiOutput.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("系统词典释义")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color.white.opacity(0.50))
-                            Text(vm.systemDefinition)
-                                .font(.system(size: 12))
-                                .foregroundStyle(Color.white.opacity(0.78))
-                                .lineSpacing(3)
-                                .textSelection(.enabled)
-                        }
-                        .padding(9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white.opacity(0.05))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.white.opacity(0.09), lineWidth: 0.8)
-                        )
-                    }
+                ScrollView(.vertical, showsIndicators: true) {
+                    translationContentStack
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(height: 500)
             }
-            .frame(minHeight: 64, maxHeight: 240)
+            .frame(minHeight: 110)
 
             // MARK: - Bottom Action Icon Toolbar Row (⇅  ≡  |  🔊  📋  🔄)
             HStack(spacing: 10) {
@@ -314,10 +230,10 @@ public struct FloatingTranslatorView: View {
             }
             .padding(.top, 2)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 13)
+        .padding(.horizontal, 18)
+        .padding(.bottom, 15)
         .padding(.top, 2)
-        .frame(width: 410)
+        .frame(width: 480)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(white: 0.10, opacity: 0.96))
@@ -329,6 +245,120 @@ public struct FloatingTranslatorView: View {
         )
         .padding(16)
         .environment(\.colorScheme, .dark)
+        .onChange(of: vm.aiOutput) { _ in
+            WindowManager.shared.resizeCardPanelToFitContent()
+        }
+        .onChange(of: vm.systemDefinition) { _ in
+            WindowManager.shared.resizeCardPanelToFitContent()
+        }
+        .onChange(of: vm.showOriginalText) { _ in
+            WindowManager.shared.resizeCardPanelToFitContent()
+        }
+        .onChange(of: vm.showSystemDictDetail) { _ in
+            WindowManager.shared.resizeCardPanelToFitContent()
+        }
+        .onChange(of: vm.isStreaming) { _ in
+            WindowManager.shared.resizeCardPanelToFitContent()
+        }
+    }
+
+    @ViewBuilder
+    private var translationContentStack: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if vm.showOriginalText || vm.capturedImage != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let img = vm.capturedImage {
+                        Image(nsImage: img)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 110)
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
+                            )
+                    }
+                    if vm.showOriginalText {
+                        TextField("输入或修改原文后按回车重译...", text: $vm.inputText, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.white.opacity(0.76))
+                            .lineLimit(1...6)
+                            .padding(9)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                            )
+                            .onSubmit {
+                                vm.rerunCurrentInput()
+                            }
+                    }
+                }
+            }
+
+            // Phonetic badge if single word
+            if !vm.phonetic.isEmpty {
+                HStack(spacing: 8) {
+                    Text(vm.inputText)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.96))
+                    Text(vm.phonetic)
+                        .font(.system(size: 13, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.62))
+                }
+            }
+
+            // Primary Translated Output
+            if let err = vm.errorMessage {
+                Text("⚠️ \(err)")
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(Color.white.opacity(0.82))
+                    .textSelection(.enabled)
+            } else if vm.aiOutput.isEmpty && vm.isStreaming {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .colorScheme(.dark)
+                    Text("正在翻译...")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.white.opacity(0.58))
+                }
+                .padding(.vertical, 8)
+            } else {
+                Text(vm.aiOutput.isEmpty ? vm.systemDefinition : vm.aiOutput)
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.95))
+                    .lineSpacing(5.5)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
+            }
+
+            // Expandable macOS System Dictionary Detail
+            if vm.showSystemDictDetail && !vm.systemDefinition.isEmpty && !vm.aiOutput.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("系统词典释义")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.52))
+                    Text(vm.systemDefinition)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.white.opacity(0.82))
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.white.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                )
+            }
+        }
     }
 }
 
