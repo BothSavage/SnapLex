@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+APP_VERSION="${SNAPLEX_VERSION:-0.1.0}"
+APP_BUILD_NUMBER="${SNAPLEX_BUILD_NUMBER:-1}"
+
 echo "==> [1/3] Compiling SnapLex (arm64 native release)..."
 swift build -c release
 
@@ -58,9 +61,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${APP_BUILD_NUMBER}</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>LSUIElement</key>
@@ -75,11 +78,22 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
 </plist>
 EOF
 
-echo "==> [3/3] Signing SnapLex.app with Apple Development identity for persistent TCC permissions..."
-SIGN_ID=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk '{print $2}' || true)
+echo "==> [3/3] Signing SnapLex.app..."
+SIGN_ID="${SNAPLEX_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_ID" ]; then
+    SIGN_ID=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk '{print $2}' || true)
+fi
 if [ -n "$SIGN_ID" ]; then
-    codesign --force --deep --sign "$SIGN_ID" "$APP_DIR"
+    if [ "${SNAPLEX_HARDENED_RUNTIME:-0}" = "1" ]; then
+        codesign --force --deep --options runtime --timestamp --sign "$SIGN_ID" "$APP_DIR"
+    else
+        codesign --force --deep --sign "$SIGN_ID" "$APP_DIR"
+    fi
 else
+    if [ "${SNAPLEX_HARDENED_RUNTIME:-0}" = "1" ]; then
+        echo "SNAPLEX_HARDENED_RUNTIME=1 requires SNAPLEX_SIGN_IDENTITY." >&2
+        exit 1
+    fi
     codesign --force --deep --sign - "$APP_DIR"
 fi
 

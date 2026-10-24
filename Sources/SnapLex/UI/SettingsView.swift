@@ -11,6 +11,7 @@ public struct SettingsView: View {
     @ObservedObject var settings = AppSettings.shared
     @ObservedObject private var shortcutRecorder = ShortcutRecorderController.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
+    @StateObject private var releaseUpdateChecker = GitHubReleaseUpdateService()
     @Environment(\.colorScheme) private var colorScheme
     @State private var axTrusted: Bool = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: false)
     @State private var isPinned: Bool = WindowManager.shared.isSettingsPinned
@@ -322,6 +323,63 @@ public struct SettingsView: View {
                         )
                         }
                     }
+
+                    if section == .all || section == .preferences {
+                        VStack(alignment: .leading, spacing: 10) {
+                            SectionHeaderLabel(title: L10n.string("软件更新"))
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(alignment: .center, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(L10n.format("当前版本 %@", releaseUpdateChecker.currentVersion))
+                                            .font(.system(size: 12.5, weight: .medium))
+                                            .foregroundStyle(.primary)
+                                        updateStatus
+                                    }
+                                    Spacer(minLength: 8)
+                                    Button {
+                                        Task { await releaseUpdateChecker.checkForUpdates() }
+                                    } label: {
+                                        Label(
+                                            L10n.string(releaseUpdateChecker.state == .checking ? "检查中…" : "检查更新"),
+                                            systemImage: "arrow.clockwise"
+                                        )
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(releaseUpdateChecker.state == .checking)
+                                }
+
+                                if case let .updateAvailable(version, notes, releaseURL) = releaseUpdateChecker.state {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(L10n.format("发现新版本 %@", version))
+                                            .font(.system(size: 12, weight: .semibold))
+                                        if !notes.isEmpty {
+                                            Text(notes)
+                                                .font(.system(size: 11.5))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(6)
+                                                .textSelection(.enabled)
+                                        }
+                                        Link(destination: releaseURL) {
+                                            Label(L10n.string("查看 GitHub 发布页面"), systemImage: "arrow.up.right.square")
+                                        }
+                                        .font(.system(size: 11.5, weight: .medium))
+                                    }
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+                                }
+                            }
+                            .padding(14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.primary.opacity(0.025))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
+                            )
+                        }
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 18)
@@ -342,6 +400,37 @@ public struct SettingsView: View {
             isPinned = WindowManager.shared.isSettingsPinned
             axTrusted = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: false)
             launchAtLogin.refreshStatus()
+        }
+    }
+
+    @ViewBuilder
+    private var updateStatus: some View {
+        switch releaseUpdateChecker.state {
+        case .idle:
+            Text(L10n.string("通过 GitHub Releases 检查最新正式版本"))
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+        case .checking:
+            Text(L10n.string("正在连接 GitHub…"))
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+        case .upToDate:
+            Text(L10n.string("当前已是最新正式版本"))
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+        case .noRelease:
+            Text(L10n.string("GitHub 上还没有正式版发布"))
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+        case .failed(let message):
+            Text(message)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        case .updateAvailable:
+            Text(L10n.string("发现可用更新"))
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.primary)
         }
     }
 }
