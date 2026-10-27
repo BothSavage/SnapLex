@@ -201,12 +201,7 @@ public struct FloatingTranslatorView: View {
                     icon: "speaker.wave.2",
                     helpText: "朗读"
                 ) {
-                    // Pronounce the selected source term (for example, “Pitch”),
-                    // rather than its Chinese translation.
-                    let textToSpeak = vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? vm.translatedOutput
-                        : vm.inputText
-                    SystemDictionaryService.shared.speak(textToSpeak)
+                    vm.speakEnglish()
                 }
 
                 ToolbarIconButton(

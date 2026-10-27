@@ -33,6 +33,8 @@ public final class TranslatorViewModel: ObservableObject {
     private let googleTranslator: @MainActor (String, String) async throws -> GoogleTranslationResult
     private let translationEngineProvider: @MainActor () -> TranslationEngine
     private let historyRecorder: @MainActor (String, String, String, String, String, TranslationTriggerSource) -> Void
+    private let englishSpeaker: @MainActor (String) -> Void
+    private let showSpeechTranslationCard: @MainActor () -> Void
     private let translationLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "SnapLex",
         category: "Translation"
@@ -42,12 +44,17 @@ public final class TranslatorViewModel: ObservableObject {
     private(set) var activeSelectionDiagnosticID: String?
     private var googleTranslationTask: Task<Void, Never>?
     private var usingAppleFallback = false
+    private var pendingEnglishSpeechRequestID: UUID?
+    private var lastCompletedTranslationInput: String?
+    private var activeTranslationInput: String?
 
     init(
         googleTranslationService: GoogleTranslationService = .shared,
         googleTranslator: (@MainActor (String, String) async throws -> GoogleTranslationResult)? = nil,
         translationEngineProvider: (@MainActor () -> TranslationEngine)? = nil,
-        historyRecorder: (@MainActor (String, String, String, String, String, TranslationTriggerSource) -> Void)? = nil
+        historyRecorder: (@MainActor (String, String, String, String, String, TranslationTriggerSource) -> Void)? = nil,
+        englishSpeaker: (@MainActor (String) -> Void)? = nil,
+        showSpeechTranslationCard: (@MainActor () -> Void)? = nil
     ) {
         self.googleTranslationService = googleTranslationService
         self.googleTranslator = googleTranslator ?? { text, targetLanguage in
@@ -63,6 +70,10 @@ public final class TranslatorViewModel: ObservableObject {
                 sourceApp: sourceApp,
                 trigger: trigger
             )
+        }
+        self.englishSpeaker = englishSpeaker ?? { SystemDictionaryService.shared.speak($0) }
+        self.showSpeechTranslationCard = showSpeechTranslationCard ?? {
+            WindowManager.shared.showTranslationCard(atSavedAnchor: true, nearMouse: true)
         }
     }
 
@@ -167,15 +178,19 @@ public final class TranslatorViewModel: ObservableObject {
     }
 
     public func cancelPendingTranslation() {
+        pendingEnglishSpeechRequestID = nil
         translationRequestID = UUID()
         googleTranslationTask?.cancel()
         googleTranslationTask = nil
         usingAppleFallback = false
+        activeTranslationInput = nil
         translationConfiguration = nil
         isTranslating = false
     }
 
     private func runTranslation(for text: String, targetLang: String, selectionDiagnosticID: String? = nil) {
+        pendingEnglishSpeechRequestID = nil
+        lastCompletedTranslationInput = nil
         googleTranslationTask?.cancel()
         googleTranslationTask = nil
         usingAppleFallback = false
@@ -186,6 +201,7 @@ public final class TranslatorViewModel: ObservableObject {
         let requestID = translationRequestID.uuidString
 
         let cleanedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        activeTranslationInput = cleanedText
         guard !cleanedText.isEmpty else {
             translationConfiguration = nil
             isTranslating = false
@@ -198,6 +214,7 @@ public final class TranslatorViewModel: ObservableObject {
         guard source != target else {
             translationConfiguration = nil
             translatedOutput = cleanedText
+            lastCompletedTranslationInput = cleanedText
             isTranslating = false
             recordCompletedTranslation(inputText: cleanedText, translatedText: cleanedText)
             translationLogger.info("translation completed request=\(requestID, privacy: .public) selectionRequest=\(selectionDiagnosticID ?? "-", privacy: .public) engine=identity characters=\(cleanedText.count, privacy: .public)")
@@ -220,6 +237,8 @@ public final class TranslatorViewModel: ObservableObject {
                         return
                     }
                     self.translatedOutput = result.translation
+                    self.lastCompletedTranslationInput = cleanedText
+                    self.speakPendingEnglishTranslation(for: self.translationRequestID)
                     self.googleDictionaryEntries = result.dictionaryEntries
                     self.isTranslating = false
                     self.errorMessage = nil
@@ -229,6 +248,7 @@ public final class TranslatorViewModel: ObservableObject {
                 } catch is CancellationError {
                     self.translationLogger.debug("translation cancelled request=\(requestID, privacy: .public) engine=google")
                     guard requestID == self.translationRequestID.uuidString else { return }
+                    self.pendingEnglishSpeechRequestID = nil
                     self.isTranslating = false
                 } catch {
                     guard !Task.isCancelled else { return }
@@ -260,6 +280,47 @@ public final class TranslatorViewModel: ObservableObject {
                 translationConfiguration = NativeTranslationSupport.makeConfiguration(source: source, target: target)
             }
         }
+    }
+
+    /// Speak the English side, translating with the selected engine when necessary.
+    public func speakEnglish(fromPill: Bool = false) {
+        let source = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return }
+        if NativeTranslationSupport.sourceLanguageCode(for: source) == "en" {
+            pendingEnglishSpeechRequestID = nil
+            englishSpeaker(source)
+            return
+        }
+
+        if !fromPill, targetLangLabel == "English", !isTranslating, lastCompletedTranslationInput == source {
+            let translation = translatedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !translation.isEmpty {
+                englishSpeaker(translation)
+                return
+            }
+        }
+
+        if fromPill {
+            let diagnosticID = preparedSelectionDiagnosticID
+            preparedSelectionDiagnosticID = nil
+            startTranslation(overrideTargetLang: "English", selectionDiagnosticID: diagnosticID)
+        } else if targetLangLabel != "English" {
+            changeTargetLanguage(to: "English")
+        } else if !isTranslating || activeTranslationInput != source {
+            rerunCurrentInput()
+        }
+        guard isTranslating else { return }
+        pendingEnglishSpeechRequestID = translationRequestID
+        if fromPill {
+            showSpeechTranslationCard()
+        }
+    }
+
+    private func speakPendingEnglishTranslation(for requestID: UUID) {
+        guard pendingEnglishSpeechRequestID == requestID, targetLangLabel == "English" else { return }
+        pendingEnglishSpeechRequestID = nil
+        let translation = translatedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !translation.isEmpty { englishSpeaker(translation) }
     }
 
     public func translatePending(using session: TranslationSession) async {
@@ -297,6 +358,8 @@ public final class TranslatorViewModel: ObservableObject {
                 return
             }
             translatedOutput = translatedText
+            lastCompletedTranslationInput = text
+            speakPendingEnglishTranslation(for: requestID)
             isTranslating = false
             errorMessage = nil
             recordCompletedTranslation(inputText: text, translatedText: translatedText)
@@ -305,9 +368,11 @@ public final class TranslatorViewModel: ObservableObject {
         } catch is CancellationError {
             translationLogger.debug("native translation cancelled request=\(requestIDLabel, privacy: .public)")
             guard requestID == translationRequestID else { return }
+            pendingEnglishSpeechRequestID = nil
             isTranslating = false
         } catch {
             guard requestID == translationRequestID else { return }
+            pendingEnglishSpeechRequestID = nil
             isTranslating = false
             errorMessage = NativeTranslationSupport.userFacingError(for: error)
             translationLogger.error("native translation failed request=\(requestIDLabel, privacy: .public) selectionRequest=\(selectionDiagnosticID ?? "-", privacy: .public) errorType=\(String(reflecting: type(of: error)), privacy: .public)")

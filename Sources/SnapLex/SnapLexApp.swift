@@ -110,6 +110,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateCancel
     }
 
+    func allowTerminationForUpdate() {
+        explicitQuitRequested = true
+    }
+
     private func setupStatusBarMenu() {
         let item: NSStatusItem
         if let statusItem {

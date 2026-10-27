@@ -36,19 +36,20 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         shell: bash
         run: |
           present=0
-          for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+          for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID SPARKLE_EDDSA_PRIVATE_KEY; do
             if [[ -n "${!name}" ]]; then present=$((present + 1)); fi
           done
           if [[ "$present" -eq 0 ]]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "No signing credentials configured; publish an unnotarized DMG manually."
-          elif [[ "$present" -eq 6 ]]; then
+          elif [[ "$present" -eq 7 ]]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Signing credentials are incomplete; configure all six secrets or remove them for manual publishing." >&2
+            echo "Signing credentials are incomplete; configure all seven secrets or remove them for manual publishing." >&2
             exit 1
           fi
 
@@ -84,7 +85,7 @@ jobs:
         if: steps.credentials.outputs.configured == 'true'
         env:
           SNAPLEX_VERSION: ${{ steps.version.outputs.value }}
-          SNAPLEX_BUILD_NUMBER: ${{ github.run_number }}
+          SNAPLEX_BUILD_NUMBER: ${{ steps.version.outputs.value }}
         run: ./scripts/build_app.sh
 
       - name: Create and notarize disk image
@@ -113,6 +114,21 @@ jobs:
           xcrun stapler staple "$DMG_PATH"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
 
+      - name: Generate signed update feed
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/update-feed"
+          cp "$DMG_PATH" "$RUNNER_TEMP/update-feed/"
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+            --ed-key-file - --maximum-deltas 0 \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
+            "$RUNNER_TEMP/update-feed"
+          swift scripts/verify_sparkle_feed.swift "$RUNNER_TEMP/update-feed/appcast.xml"
+          echo "APPCAST_PATH=$RUNNER_TEMP/update-feed/appcast.xml" >> "$GITHUB_ENV"
+
       - name: Publish GitHub Release
         if: steps.credentials.outputs.configured == 'true'
         env:
@@ -121,12 +137,14 @@ jobs:
         shell: bash
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            ASSET_NAME="$(basename "$DMG_PATH")"
-            if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -Fxq -- "$ASSET_NAME"; then
-              echo "Release asset already exists: $ASSET_NAME"
-            else
-              gh release upload "$GITHUB_REF_NAME" "$DMG_PATH"
-            fi
+            for asset in "$DMG_PATH" "$APPCAST_PATH"; do
+              ASSET_NAME="$(basename "$asset")"
+              if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -Fxq -- "$ASSET_NAME"; then
+                echo "Release asset already exists: $ASSET_NAME"
+              else
+                gh release upload "$GITHUB_REF_NAME" "$asset"
+              fi
+            done
           else
-            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" --title "SnapLex $RELEASE_VERSION" --generate-notes
+            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --generate-notes
           fi

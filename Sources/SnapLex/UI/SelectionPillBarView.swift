@@ -217,7 +217,7 @@ public struct SelectionPillBarView: View {
                 icon: "speaker.wave.2",
                 title: L10n.string("朗读")
             ) {
-                SystemDictionaryService.shared.speak(vm.inputText)
+                vm.speakEnglish(fromPill: true)
             }
         }
         .padding(.horizontal, 8)

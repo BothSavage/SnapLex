@@ -33,13 +33,12 @@ public final class SystemDictionaryService {
     /// Speak text using macOS native AVSpeechSynthesizer
     public func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, let englishVoice = AVSpeechSynthesisVoice(language: "en-US") else { return }
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }
         let utterance = AVSpeechUtterance(string: trimmed)
-        let hasChinese = trimmed.range(of: "\\p{Han}", options: .regularExpression) != nil
-        utterance.voice = AVSpeechSynthesisVoice(language: hasChinese ? "zh-CN" : "en-US")
+        utterance.voice = englishVoice
         utterance.rate = 0.48
         synthesizer.speak(utterance)
     }

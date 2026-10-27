@@ -76,13 +76,14 @@ final class GitHubReleaseUpdateServiceTests: XCTestCase {
 
         await service.checkForUpdates()
 
-        guard case let .updateAvailable(version, notes, releaseURL, downloadURL) = service.state else {
+        guard case let .updateAvailable(version, notes, releaseURL, downloadURL, hasUpdateFeed) = service.state else {
             return XCTFail("Expected an update to be available, received \(service.state)")
         }
         XCTAssertEqual(version, "0.2.0")
         XCTAssertEqual(notes, "Faster capture\n\nBug fixes")
         XCTAssertEqual(releaseURL.absoluteString, "https://github.com/BothSavage/SnapLex/releases/tag/v0.2.0")
         XCTAssertNil(downloadURL)
+        XCTAssertFalse(hasUpdateFeed)
         XCTAssertEqual(GitHubReleaseURLProtocol.lastRequest?.url?.path, "/repos/BothSavage/SnapLex/releases/latest")
         XCTAssertEqual(GitHubReleaseURLProtocol.lastRequest?.value(forHTTPHeaderField: "Accept"), "application/vnd.github+json")
     }
@@ -107,7 +108,7 @@ final class GitHubReleaseUpdateServiceTests: XCTestCase {
         }
         let service = Self.makeService(currentVersion: "0.1.0")
         await service.checkForUpdates()
-        guard case let .updateAvailable(_, _, _, downloadURL) = service.state else {
+        guard case let .updateAvailable(_, _, _, downloadURL, _) = service.state else {
             return XCTFail("Expected an available update")
         }
         XCTAssertEqual(downloadURL?.absoluteString, prefix + "\(base).dmg")
@@ -130,7 +131,7 @@ final class GitHubReleaseUpdateServiceTests: XCTestCase {
         }
         let service = Self.makeService(currentVersion: "0.1.0")
         await service.checkForUpdates()
-        guard case let .updateAvailable(_, _, _, downloadURL) = service.state else {
+        guard case let .updateAvailable(_, _, _, downloadURL, _) = service.state else {
             return XCTFail("Expected an available update")
         }
         XCTAssertEqual(downloadURL?.absoluteString, download)
@@ -158,10 +159,33 @@ final class GitHubReleaseUpdateServiceTests: XCTestCase {
         }
         let service = Self.makeService(currentVersion: "0.1.0")
         await service.checkForUpdates()
-        guard case let .updateAvailable(_, _, _, downloadURL) = service.state else {
+        guard case let .updateAvailable(_, _, _, downloadURL, _) = service.state else {
             return XCTFail("Expected an available update")
         }
         XCTAssertNil(downloadURL)
+    }
+
+    func testUpdateOnlyEnablesInstallerForTheReleaseFeedOnGitHub() async {
+        for (url, expected) in [
+            ("https://github.com/BothSavage/SnapLex/releases/download/v1.0.1/appcast.xml", true),
+            ("https://example.com/appcast.xml", false),
+            ("https://github.com/BothSavage/SnapLex/releases/download/v1.0.0/appcast.xml", false)
+        ] {
+            GitHubReleaseURLProtocol.handler = { request in
+                try Self.response(for: request, status: 200, payload: [
+                    "tag_name": "v1.0.1",
+                    "html_url": "https://github.com/BothSavage/SnapLex/releases/tag/v1.0.1",
+                    "assets": [["name": "appcast.xml", "browser_download_url": url]]
+                ])
+            }
+            let service = Self.makeService(currentVersion: "0.1.0")
+            await service.checkForUpdates()
+            guard case let .updateAvailable(_, _, _, _, hasUpdateFeed) = service.state else {
+                XCTFail("Expected an available update")
+                continue
+            }
+            XCTAssertEqual(hasUpdateFeed, expected, url)
+        }
     }
 
     func testUpdateCheckReportsNoReleaseWhenGitHubHasNoPublishedRelease() async throws {

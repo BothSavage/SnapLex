@@ -10,9 +10,13 @@ let package = Package(
     products: [
         .executable(name: "SnapLex", targets: ["SnapLex"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6")
+    ],
     targets: [
         .executableTarget(
             name: "SnapLex",
+            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/SnapLex",
             resources: [.process("Resources")],
             linkerSettings: [
@@ -30,7 +34,8 @@ let package = Package(
                 .linkedFramework("Carbon"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("ApplicationServices"),
-                .linkedFramework("ServiceManagement")
+                .linkedFramework("ServiceManagement"),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../Frameworks"])
             ]
         ),
         .testTarget(

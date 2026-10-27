@@ -12,6 +12,7 @@ public struct SettingsView: View {
     @ObservedObject private var shortcutRecorder = ShortcutRecorderController.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
     @StateObject private var releaseUpdateChecker = GitHubReleaseUpdateService()
+    @ObservedObject private var updateInstaller = NativeUpdateInstaller.shared
     @Environment(\.colorScheme) private var colorScheme
     @State private var axTrusted: Bool = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: false)
     @State private var isPinned: Bool = WindowManager.shared.isSettingsPinned
@@ -340,29 +341,24 @@ public struct SettingsView: View {
                                         )
                                     }
                                     .buttonStyle(.bordered)
-                                    .disabled(releaseUpdateChecker.state == .checking)
+                                    .disabled(releaseUpdateChecker.state == .checking || updateInstaller.isBusy)
                                 }
 
-                                if case let .updateAvailable(version, notes, releaseURL, downloadURL) = releaseUpdateChecker.state {
+                                if case let .updateAvailable(version, notes, releaseURL, downloadURL, hasUpdateFeed) = releaseUpdateChecker.state {
                                     VStack(alignment: .leading, spacing: 8) {
                                         Text(L10n.format("发现新版本 %@", version))
                                             .font(.system(size: 12, weight: .semibold))
                                         if !notes.isEmpty {
-                                            Text(notes)
-                                                .font(.system(size: 11.5))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(6)
-                                                .textSelection(.enabled)
+                                            ReleaseNotesSummary(notes: notes)
                                         }
-                                        if let downloadURL {
-                                            Link(destination: downloadURL) {
-                                                Label(L10n.string("下载安装包"), systemImage: "arrow.down.circle")
-                                            }
-                                            .buttonStyle(.borderedProminent)
-                                            Text(L10n.string("将通过浏览器下载安装包"))
-                                                .font(.system(size: 11))
-                                                .foregroundStyle(.secondary)
+                                        if downloadURL != nil && hasUpdateFeed {
+                                            updateInstallControls(version: version)
                                         } else {
+                                            if downloadURL != nil {
+                                                Text(L10n.string("此版本需要手动安装"))
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(.secondary)
+                                            }
                                             Link(destination: releaseURL) {
                                                 Label(L10n.string("查看 GitHub 发布页面"), systemImage: "arrow.up.right.square")
                                             }
@@ -409,6 +405,51 @@ public struct SettingsView: View {
     }
 
     @ViewBuilder
+    private func updateInstallControls(version: String) -> some View {
+        switch updateInstaller.state {
+        case .idle, .failed:
+            if case let .failed(message) = updateInstaller.state {
+                Text(message)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+            Button {
+                updateInstaller.download(version: version)
+            } label: {
+                Label(L10n.string("下载并安装"), systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.borderedProminent)
+        case .checking:
+            HStack {
+                ProgressView(L10n.string("正在准备更新…"))
+                Button(L10n.string("取消")) { updateInstaller.cancel() }
+            }
+        case let .downloading(progress):
+            HStack {
+                updateProgress(L10n.string("正在下载更新…"), progress: progress)
+                Button(L10n.string("取消")) { updateInstaller.cancel() }
+            }
+        case let .preparing(progress):
+            updateProgress(L10n.string("正在验证和准备安装…"), progress: progress)
+        case .ready:
+            Button(L10n.string("安装并重启")) { updateInstaller.installAndRestart() }
+                .buttonStyle(.borderedProminent)
+        case .installing:
+            ProgressView(L10n.string("正在安装更新…"))
+        }
+    }
+
+    @ViewBuilder
+    private func updateProgress(_ title: String, progress: Double?) -> some View {
+        if let progress {
+            ProgressView(title, value: progress, total: 1)
+        } else {
+            ProgressView(title)
+        }
+    }
+
+    @ViewBuilder
     private var updateStatus: some View {
         switch releaseUpdateChecker.state {
         case .idle:
@@ -437,6 +478,50 @@ public struct SettingsView: View {
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(.primary)
         }
+    }
+}
+
+private struct ReleaseNotesSummary: View {
+    let notes: String
+
+    private var lines: [String] {
+        let all = notes.components(separatedBy: .newlines)
+        var result: [String] = []
+        for line in all {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            if trimmed.hasPrefix("#"), !result.isEmpty { break }
+            result.append(trimmed)
+            if result.count == 6 { break }
+        }
+        return result
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                if line.hasPrefix("#") {
+                    Text(inline(line.trimmingCharacters(in: CharacterSet(charactersIn: "# "))))
+                        .font(.system(size: 11.5, weight: .semibold))
+                } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                    HStack(alignment: .top, spacing: 5) {
+                        Text("•")
+                        Text(inline(String(line.dropFirst(2))))
+                    }
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                } else {
+                    Text(inline(line))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private func inline(_ value: String) -> AttributedString {
+        (try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
     }
 }
 

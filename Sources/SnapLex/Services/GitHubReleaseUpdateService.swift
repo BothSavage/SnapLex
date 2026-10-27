@@ -125,7 +125,7 @@ public final class GitHubReleaseUpdateService: ObservableObject {
         case checking
         case upToDate
         case noRelease
-        case updateAvailable(version: String, notes: String, releaseURL: URL, downloadURL: URL?)
+        case updateAvailable(version: String, notes: String, releaseURL: URL, downloadURL: URL?, hasUpdateFeed: Bool)
         case failed(String)
     }
 
@@ -187,6 +187,14 @@ public final class GitHubReleaseUpdateService: ObservableObject {
         return nil
     }
 
+    private func hasUpdateFeed(_ release: Release) -> Bool {
+        guard let asset = release.assets?.first(where: { $0.name == "appcast.xml" }) else { return false }
+        let url = asset.browserDownloadURL
+        return url.scheme == "https" && url.host == "github.com" && url.user == nil && url.password == nil
+            && url.port == nil && url.query == nil && url.fragment == nil
+            && url.path == "/\(owner)/\(repository)/releases/download/\(release.tagName)/appcast.xml"
+    }
+
     init(session: URLSession = .shared, currentVersion: String? = nil) {
         self.session = session
         self.currentVersionOverride = currentVersion
@@ -195,7 +203,7 @@ public final class GitHubReleaseUpdateService: ObservableObject {
     public var currentVersion: String {
         currentVersionOverride
             ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-            ?? "1.0.2"
+            ?? "1.0.3"
     }
 
     public func checkForUpdates() async {
@@ -237,7 +245,8 @@ public final class GitHubReleaseUpdateService: ObservableObject {
                     version: version.normalized,
                     notes: release.body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
                     releaseURL: release.htmlURL,
-                    downloadURL: downloadURL(for: release, version: version)
+                    downloadURL: downloadURL(for: release, version: version),
+                    hasUpdateFeed: hasUpdateFeed(release)
                 )
             } else {
                 state = .upToDate

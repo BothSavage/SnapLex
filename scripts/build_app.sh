@@ -4,13 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-APP_VERSION="${SNAPLEX_VERSION:-1.0.2}"
-APP_BUILD_NUMBER="${SNAPLEX_BUILD_NUMBER:-1}"
+APP_VERSION="${SNAPLEX_VERSION:-1.0.3}"
+APP_BUILD_NUMBER="${SNAPLEX_BUILD_NUMBER:-$APP_VERSION}"
 
 echo "==> [1/3] Compiling SnapLex (arm64 native release)..."
 swift build -c release
 
-APP_DIR="$ROOT_DIR/dist/SnapLex.app"
+APP_DIR="${SNAPLEX_APP_OUTPUT_DIR:-$ROOT_DIR/dist}/SnapLex.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -43,6 +43,10 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
     cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/"
 fi
 
+SPARKLE_FRAMEWORK="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+mkdir -p "$CONTENTS_DIR/Frameworks"
+ditto "$SPARKLE_FRAMEWORK" "$CONTENTS_DIR/Frameworks/Sparkle.framework"
+
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -74,6 +78,16 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <string>用于按你的选择录制屏幕区域。</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>SUFeedURL</key>
+    <string>https://github.com/BothSavage/SnapLex/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>mVBZlQtFsQAnDQeK67N1iHhLqFESazmbYuox/6yOrPY=</string>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SURequireSignedFeed</key>
+    <true/>
+    <key>SUEnableAutomaticChecks</key>
+    <false/>
 </dict>
 </plist>
 EOF
@@ -85,17 +99,26 @@ if [ -z "$SIGN_ID" ]; then
 fi
 if [ -n "$SIGN_ID" ]; then
     if [ "${SNAPLEX_HARDENED_RUNTIME:-0}" = "1" ]; then
-        codesign --force --deep --options runtime --timestamp --sign "$SIGN_ID" "$APP_DIR"
+        SIGN_OPTIONS=(--options runtime --timestamp)
     else
-        codesign --force --deep --sign "$SIGN_ID" "$APP_DIR"
+        SIGN_OPTIONS=()
     fi
 else
     if [ "${SNAPLEX_HARDENED_RUNTIME:-0}" = "1" ]; then
         echo "SNAPLEX_HARDENED_RUNTIME=1 requires SNAPLEX_SIGN_IDENTITY." >&2
         exit 1
     fi
-    codesign --force --deep --sign - "$APP_DIR"
+    SIGN_ID="-"
+    SIGN_OPTIONS=()
 fi
+
+FRAMEWORK="$CONTENTS_DIR/Frameworks/Sparkle.framework"
+codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" --preserve-metadata=entitlements "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/Autoupdate"
+codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/Updater.app"
+codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$FRAMEWORK"
+codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$APP_DIR"
 
 echo "✅ Done! App bundle created at: $APP_DIR"
 echo "   Binary size: $(du -sh "$MACOS_DIR/SnapLex" | cut -f1)"

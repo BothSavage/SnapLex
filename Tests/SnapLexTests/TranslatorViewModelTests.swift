@@ -202,15 +202,118 @@ final class TranslatorViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.translatedOutput, "hello")
     }
 
+    func testSpeechUsesEnglishTranslationForChineseSource() async throws {
+        var spoken: [String] = []
+        let viewModel = makeViewModel(
+            googleTranslator: { _, _ in GoogleTranslationResult(translation: "Manual installation") },
+            englishSpeaker: { spoken.append($0) }
+        )
+        viewModel.startTranslation(text: "手动安装", overrideTargetLang: "English")
+        try await waitUntil { !viewModel.isTranslating }
+        viewModel.speakEnglish()
+        XCTAssertEqual(spoken, ["Manual installation"])
+    }
+
+    func testSpeechUsesEnglishOriginalWhenTranslationIsChinese() async throws {
+        var spoken: [String] = []
+        let viewModel = makeViewModel(
+            googleTranslator: { _, _ in GoogleTranslationResult(translation: "手动安装") },
+            englishSpeaker: { spoken.append($0) }
+        )
+        viewModel.startTranslation(text: "Manual installation", overrideTargetLang: "简体中文")
+        try await waitUntil { !viewModel.isTranslating }
+        viewModel.speakEnglish()
+        XCTAssertEqual(spoken, ["Manual installation"])
+    }
+
+    func testChineseSelectionSpeechTranslatesToEnglishWithSelectedEngine() async throws {
+        var spoken: [String] = []
+        var cardShown = false
+        let viewModel = makeViewModel(
+            googleTranslator: { text, target in
+                XCTAssertEqual(text, "手动安装")
+                XCTAssertEqual(target, "English")
+                return GoogleTranslationResult(translation: "Manual installation")
+            },
+            englishSpeaker: { spoken.append($0) },
+            showSpeechTranslationCard: { cardShown = true }
+        )
+        viewModel.preparePillSelection(text: "手动安装", sourceApp: "Test", trigger: .mouseSelect)
+        viewModel.speakEnglish(fromPill: true)
+        XCTAssertTrue(cardShown)
+        try await waitUntil { !viewModel.isTranslating }
+        XCTAssertEqual(spoken, ["Manual installation"])
+    }
+
+    func testSpeechDoesNotUseStaleTranslationAfterInputChanges() async throws {
+        var spoken: [String] = []
+        let viewModel = makeViewModel(
+            googleTranslator: { text, _ in
+                GoogleTranslationResult(translation: text == "手动安装" ? "Manual installation" : "Automatic installation")
+            },
+            englishSpeaker: { spoken.append($0) }
+        )
+        viewModel.startTranslation(text: "手动安装", overrideTargetLang: "English")
+        try await waitUntil { !viewModel.isTranslating }
+        viewModel.inputText = "自动安装"
+        viewModel.speakEnglish()
+        try await waitUntil { !viewModel.isTranslating }
+        XCTAssertEqual(spoken, ["Automatic installation"])
+    }
+
+    func testSpeechWaitsForNativeEnglishTranslationAndDoesNotSpeakOnFailure() async {
+        var spoken: [String] = []
+        let viewModel = makeViewModel(translationEngine: .apple, englishSpeaker: { spoken.append($0) })
+        viewModel.startTranslation(text: "手动安装", overrideTargetLang: "English")
+        viewModel.speakEnglish()
+        XCTAssertTrue(spoken.isEmpty)
+        await viewModel.translatePending(prepareNativeTranslation: {}, usingNativeTranslator: { _ in "Manual installation" })
+        XCTAssertEqual(spoken, ["Manual installation"])
+
+        viewModel.startTranslation(text: "自动安装", overrideTargetLang: "English")
+        viewModel.speakEnglish()
+        await viewModel.translatePending(prepareNativeTranslation: {}, usingNativeTranslator: { _ in throw URLError(.notConnectedToInternet) })
+        XCTAssertEqual(spoken, ["Manual installation"])
+        XCTAssertNotNil(viewModel.errorMessage)
+    }
+
+    func testSpeechDoesNotReadOldInFlightTranslationAfterInputChanges() async throws {
+        let firstStarted = expectation(description: "first translation started")
+        var firstResponse: CheckedContinuation<GoogleTranslationResult, Error>?
+        var spoken: [String] = []
+        let viewModel = makeViewModel(
+            googleTranslator: { text, _ in
+                if text == "手动安装" {
+                    firstStarted.fulfill()
+                    return try await withCheckedThrowingContinuation { firstResponse = $0 }
+                }
+                return GoogleTranslationResult(translation: "Automatic installation")
+            },
+            englishSpeaker: { spoken.append($0) }
+        )
+        viewModel.startTranslation(text: "手动安装", overrideTargetLang: "English")
+        await fulfillment(of: [firstStarted], timeout: 1)
+        viewModel.inputText = "自动安装"
+        viewModel.speakEnglish()
+        try await waitUntil { !viewModel.isTranslating }
+        firstResponse?.resume(returning: GoogleTranslationResult(translation: "Manual installation"))
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(spoken, ["Automatic installation"])
+    }
+
     private func makeViewModel(
         translationEngine: TranslationEngine = .google,
         googleTranslator: (@MainActor (String, String) async throws -> GoogleTranslationResult)? = nil,
-        historyRecorder: (@MainActor (String, String, String, String, String, TranslationTriggerSource) -> Void)? = nil
+        historyRecorder: (@MainActor (String, String, String, String, String, TranslationTriggerSource) -> Void)? = nil,
+        englishSpeaker: (@MainActor (String) -> Void)? = nil,
+        showSpeechTranslationCard: (@MainActor () -> Void)? = nil
     ) -> TranslatorViewModel {
         TranslatorViewModel(
             googleTranslator: googleTranslator,
             translationEngineProvider: { translationEngine },
-            historyRecorder: historyRecorder ?? { _, _, _, _, _, _ in }
+            historyRecorder: historyRecorder ?? { _, _, _, _, _, _ in },
+            englishSpeaker: englishSpeaker,
+            showSpeechTranslationCard: showSpeechTranslationCard
         )
     }
 
