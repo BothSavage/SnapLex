@@ -29,14 +29,10 @@ public struct TranslationHistoryView: View {
         return store.entries.filter { period.includes($0.createdAt, now: now, calendar: calendar) }
     }
 
-    private var termStatistics: [TranslationTermStatistic] {
-        store.termStatistics(for: filteredEntries)
-    }
-
-    private var dailyCounts: [TranslationHistoryDay] {
+    private func dailyCounts(for entries: [TranslationHistoryEntry]) -> [TranslationHistoryDay] {
         let calendar = Calendar.current
         let now = Date()
-        let entriesByDay = Dictionary(grouping: filteredEntries) { calendar.startOfDay(for: $0.createdAt) }
+        let entriesByDay = Dictionary(grouping: entries) { calendar.startOfDay(for: $0.createdAt) }
         return period.days(now: now, calendar: calendar).map { date in
             TranslationHistoryDay(day: date, count: entriesByDay[date]?.count ?? 0)
         }
@@ -48,7 +44,9 @@ public struct TranslationHistoryView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let entries = filteredEntries
+        let statistics = store.termStatistics(for: entries)
+        return VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n.string("翻译记录与统计"))
@@ -81,14 +79,14 @@ public struct TranslationHistoryView: View {
             .pickerStyle(.segmented)
 
             HStack(spacing: 12) {
-                metricCard(title: L10n.string("翻译次数"), value: "\(filteredEntries.count)", icon: "character.book.closed")
-                metricCard(title: L10n.string("词汇数量"), value: "\(termStatistics.count)", icon: "textformat.abc")
+                metricCard(title: L10n.string("翻译次数"), value: "\(entries.count)", icon: "character.book.closed")
+                metricCard(title: L10n.string("词汇数量"), value: "\(statistics.count)", icon: "textformat.abc")
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text(L10n.string("翻译频率"))
                     .font(.system(size: 13, weight: .semibold))
-                Chart(dailyCounts) { item in
+                Chart(dailyCounts(for: entries)) { item in
                     BarMark(
                         x: .value(L10n.string("日期"), item.day, unit: .day),
                         y: .value(L10n.string("翻译次数"), item.count)
@@ -118,9 +116,9 @@ public struct TranslationHistoryView: View {
 
             Group {
                 if mode == .records {
-                    recordsList
+                    recordsList(entries)
                 } else {
-                    termsList
+                    termsList(statistics)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -144,10 +142,10 @@ public struct TranslationHistoryView: View {
         }
     }
 
-    private var recordsList: some View {
+    private func recordsList(_ entries: [TranslationHistoryEntry]) -> some View {
         ScrollView {
             LazyVStack(spacing: 8) {
-                if filteredEntries.isEmpty {
+                if entries.isEmpty {
                     ContentUnavailableView(
                         L10n.string("没有翻译记录"),
                         systemImage: "text.book.closed",
@@ -155,7 +153,7 @@ public struct TranslationHistoryView: View {
                     )
                     .frame(maxWidth: .infinity, minHeight: 180)
                 } else {
-                    ForEach(filteredEntries) { entry in
+                    ForEach(entries) { entry in
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack {
@@ -199,10 +197,10 @@ public struct TranslationHistoryView: View {
         }
     }
 
-    private var termsList: some View {
+    private func termsList(_ statistics: [TranslationTermStatistic]) -> some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                if termStatistics.isEmpty {
+                if statistics.isEmpty {
                     ContentUnavailableView(
                         L10n.string("没有词频数据"),
                         systemImage: "textformat.abc",
@@ -210,7 +208,7 @@ public struct TranslationHistoryView: View {
                     )
                     .frame(maxWidth: .infinity, minHeight: 180)
                 } else {
-                    ForEach(Array(termStatistics.prefix(100).enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(statistics.prefix(100).enumerated()), id: \.element.id) { index, item in
                         HStack(spacing: 12) {
                             Text("\(index + 1)")
                                 .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -240,7 +238,7 @@ public struct TranslationHistoryView: View {
                             .help(L10n.string("加入忽略词"))
                         }
                         .padding(.vertical, 9)
-                        if index < min(termStatistics.count, 100) - 1 {
+                        if index < min(statistics.count, 100) - 1 {
                             Divider()
                         }
                     }

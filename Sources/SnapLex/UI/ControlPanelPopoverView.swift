@@ -251,10 +251,7 @@ public struct ControlPanelPopoverView: View {
         .frame(width: 360, height: 600)
         .background(SnapLexTheme.toolbarBackground(for: colorScheme))
         .snapLexAppearance()
-        .onAppear {
-            translations.reload()
-            screenshots.reload()
-        }
+        .onAppear { screenshots.reload() }
     }
 
     private var popoverCardBackground: some ShapeStyle {

@@ -67,13 +67,13 @@ private enum FastScreenCapture {
     }
 }
 
-// MARK: - SnipasteCaptureManager
+// MARK: - CaptureManager
 
 @MainActor
-public final class SnipasteCaptureManager: NSObject {
-    public static let shared = SnipasteCaptureManager()
+public final class CaptureManager: NSObject {
+    public static let shared = CaptureManager()
 
-    private var reusableWindow: SnipasteOverlayWindow?
+    private var reusableWindow: CaptureOverlayWindow?
     public private(set) var isCapturing: Bool = false
 
     /// Callback when user clicks "💬 截图翻译"
@@ -89,7 +89,7 @@ public final class SnipasteCaptureManager: NSObject {
     public func prewarm() {
         FastScreenCapture.warmup()
         if reusableWindow == nil, let screen = NSScreen.main {
-            reusableWindow = SnipasteOverlayWindow(
+            reusableWindow = CaptureOverlayWindow(
                 screenFrame: screen.frame,
                 onFinish: { [weak self] in
                     self?.closeCapture()
@@ -123,11 +123,11 @@ public final class SnipasteCaptureManager: NSObject {
         let detectedWindows = Self.detectVisibleWindows(for: screen)
 
         // 2. Reuse pre-warmed window (0ms allocation!)
-        let window: SnipasteOverlayWindow
+        let window: CaptureOverlayWindow
         if let existing = reusableWindow {
             window = existing
         } else {
-            let created = SnipasteOverlayWindow(
+            let created = CaptureOverlayWindow(
                 screenFrame: screenFrame,
                 onFinish: { [weak self] in
                     self?.closeCapture()
@@ -243,10 +243,10 @@ public final class SnipasteCaptureManager: NSObject {
 
 // MARK: - Full-Screen Pre-Warmed Overlay Window
 
-public final class SnipasteOverlayWindow: NSPanel {
+public final class CaptureOverlayWindow: NSPanel {
     private let containerView: NSView
     private let backgroundImageView: NSView
-    public let canvasView: SnipasteCaptureCanvasView
+    public let canvasView: CaptureCanvasView
 
     public init(
         screenFrame: NSRect,
@@ -263,7 +263,7 @@ public final class SnipasteOverlayWindow: NSPanel {
             "position": NSNull()
         ]
 
-        self.canvasView = SnipasteCaptureCanvasView(
+        self.canvasView = CaptureCanvasView(
             frame: localBounds,
             screenOrigin: screenFrame.origin,
             backgroundLayerProvider: { [weak backgroundImageView] in
@@ -310,14 +310,14 @@ public final class SnipasteOverlayWindow: NSPanel {
     }
 }
 
-// MARK: - 120Hz GPU-Accelerated Snipaste Canvas View
+// MARK: - 120Hz GPU-Accelerated Capture Canvas View
 
-public enum SnipasteVisionToolAction: Equatable {
+public enum CaptureVisionToolAction: Equatable {
     case scanBarcodes
 }
 
 @MainActor
-public final class SnipasteCaptureCanvasView: NSView {
+public final class CaptureCanvasView: NSView {
     private var screenOrigin: CGPoint
     private var cgImage: CGImage?
     private var detectedWindows: [DetectedWindowInfo] = []
@@ -434,7 +434,7 @@ public final class SnipasteCaptureCanvasView: NSView {
     private(set) var sessionID = UUID()
 
     // Floating SwiftUI toolbar subview (allocated once, reused across F1 sessions!)
-    private var toolbarHostingView: NSHostingView<SnipasteToolbarSwiftUIView>?
+    private var toolbarHostingView: NSHostingView<CaptureToolbarSwiftUIView>?
     private var trackingArea: NSTrackingArea?
 
     // Inline direct text field (zero popup dialog!)
@@ -589,10 +589,10 @@ public final class SnipasteCaptureCanvasView: NSView {
             return
         }
         hosting.isHidden = false
-        hosting.invalidateIntrinsicContentSize()
-        hosting.layoutSubtreeIfNeeded()
-        let fit = hosting.fittingSize
-        hosting.frame.size = fit
+        // updateToolbarView measures the hosting view when its content changes.
+        // Selection drags only move it; forcing SwiftUI layout on every mouse
+        // event makes resizing needlessly expensive.
+        let fit = hosting.frame.size
 
         // When in Full-Screen Recording mode, place the entire menu in the center of the screen
         if isRecordingSubbarExpanded && ScreenRecorderManager.shared.targetMode == .fullScreen {
@@ -602,7 +602,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             return
         }
 
-        // Top 30pt of SnipasteToolbarSwiftUIView is transparent headroom for hover tooltips.
+        // Top 30pt of CaptureToolbarSwiftUIView is transparent headroom for hover tooltips.
         let tooltipHeadroom: CGFloat = 30
         let visibleHeight = max(40, fit.height - tooltipHeadroom)
         let gap: CGFloat = 10
@@ -647,8 +647,8 @@ public final class SnipasteCaptureCanvasView: NSView {
         hosting.frame.origin = CGPoint(x: x, y: y)
     }
 
-    private func makeToolbarSwiftUIView() -> SnipasteToolbarSwiftUIView {
-        SnipasteToolbarSwiftUIView(
+    private func makeToolbarSwiftUIView() -> CaptureToolbarSwiftUIView {
+        CaptureToolbarSwiftUIView(
             selectedTool: currentTool,
             isRecordingSubbarExpanded: isRecordingSubbarExpanded,
             detectedWindows: detectedWindows,
@@ -887,7 +887,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             drawHoveredWindowCandidateBadge(for: hovered)
         }
 
-        // 7. Draw Snipaste Pixel Magnifier + Color Picker HUD ONLY while selecting or resizing
+        // 7. Draw Capture Pixel Magnifier + Color Picker HUD ONLY while selecting or resizing
         // (Never show when selection is finished and user moves mouse to click the toolbar!)
         let shouldShowLoupe: Bool = {
             if !hasLockedSelection { return true }
@@ -1449,10 +1449,14 @@ public final class SnipasteCaptureCanvasView: NSView {
 
     override public func mouseMoved(with event: NSEvent) {
         mouseLocationInView = convert(event.locationInWindow, from: nil)
-        if !hasLockedSelection || (isRecordingSubbarExpanded && ScreenRecorderManager.shared.targetMode == .window) {
+        if !hasLockedSelection {
             hoveredWindow = detectedWindows.first(where: { $0.frameInScreen.contains(mouseLocationInView) })
+            needsDisplay = true
+        } else if isRecordingSubbarExpanded && ScreenRecorderManager.shared.targetMode == .window {
+            let previousFrame = hoveredWindow?.frameInScreen
+            hoveredWindow = detectedWindows.first(where: { $0.frameInScreen.contains(mouseLocationInView) })
+            if previousFrame != hoveredWindow?.frameInScreen { needsDisplay = true }
         }
-        needsDisplay = true
     }
 
     override public func mouseDown(with event: NSEvent) {
@@ -1959,16 +1963,14 @@ public final class SnipasteCaptureCanvasView: NSView {
             baseCGImage = fallback
         }
 
-        let outputImage = NSImage(size: targetRect.size)
-        outputImage.lockFocus()
-        if let ctx = NSGraphicsContext.current?.cgContext {
-            ctx.translateBy(x: -targetRect.minX, y: -targetRect.minY)
-            ctx.draw(baseCGImage, in: bounds)
-            for item in annotations {
-                drawAnnotationItem(item, in: ctx)
+        guard let outputImage = PixelPreservingImageRenderer.capture(
+            base: baseCGImage, screenBounds: bounds, selection: targetRect,
+            drawAnnotations: { ctx in
+                for item in annotations {
+                    drawAnnotationItem(item, in: ctx)
+                }
             }
-        }
-        outputImage.unlockFocus()
+        ) else { return nil }
 
         let screenRect = CGRect(
             x: screenOrigin.x + targetRect.minX,
@@ -2015,7 +2017,7 @@ public final class SnipasteCaptureCanvasView: NSView {
     public func triggerPinAction() {
         guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
         onFinish()
-        SnipastePinManager.shared.pinImage(image, at: screenRect)
+        PinManager.shared.pinImage(image, at: screenRect)
     }
 
     public func triggerImageEffect(_ effect: VisionImageEffect) {
@@ -2032,7 +2034,7 @@ public final class SnipasteCaptureCanvasView: NSView {
                 let processed = try await VisionImageEffectsService.shared.apply(effect, to: image)
                 guard self.sessionID == sessionID else { return }
                 self.onFinish()
-                SnipastePinManager.shared.pinImage(processed, at: screenRect)
+                PinManager.shared.pinImage(processed, at: screenRect)
             } catch {
                 guard self.sessionID == sessionID else { return }
                 self.showToast((error as? VisionImageEffectsError)?.errorDescription ?? L10n.string("无法生成图片效果。"))
@@ -2040,7 +2042,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         }
     }
 
-    private func triggerVisionTool(_ action: SnipasteVisionToolAction) {
+    private func triggerVisionTool(_ action: CaptureVisionToolAction) {
         guard hasLockedSelection else {
             showToast(L10n.string("请先框选要处理的截图区域"))
             return
@@ -2086,7 +2088,7 @@ public final class SnipasteCaptureCanvasView: NSView {
     public func triggerOCRTranslateAction() {
         guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
         onFinish()
-        SnipastePinManager.shared.pinImage(
+        PinManager.shared.pinImage(
             image,
             at: screenRect,
             startWithInPlaceTranslation: true,
@@ -2098,7 +2100,7 @@ public final class SnipasteCaptureCanvasView: NSView {
     public func triggerOCRExtractAction() {
         guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
         onFinish()
-        SnipastePinManager.shared.pinImage(
+        PinManager.shared.pinImage(
             image,
             at: screenRect,
             startWithInPlaceTranslation: false,
@@ -2108,9 +2110,7 @@ public final class SnipasteCaptureCanvasView: NSView {
 
     public func triggerSaveFileAction() {
         guard let (image, _) = renderCroppedAnnotatedImage(),
-              let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let pngData = rep.representation(using: .png, properties: [:]) else { return }
+              let imageSnapshot = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
 
         onFinish()
         let formatter = DateFormatter()
@@ -2122,7 +2122,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         savePanel.allowedContentTypes = [.png]
         savePanel.canCreateDirectories = true
         if savePanel.runModal() == .OK, let url = savePanel.url {
-            try? pngData.write(to: url)
+            Task { _ = await PNGImageWriter.write(imageSnapshot, to: url) }
         }
     }
 
@@ -2135,7 +2135,7 @@ public final class SnipasteCaptureCanvasView: NSView {
     }
 }
 
-extension SnipasteCaptureCanvasView: NSTextFieldDelegate {
+extension CaptureCanvasView: NSTextFieldDelegate {
     /// Grow the borderless text field as the user types
     public func controlTextDidChange(_ obj: Notification) {
         resizeInlineTextFieldToFit()
@@ -2153,7 +2153,7 @@ extension SnipasteCaptureCanvasView: NSTextFieldDelegate {
 
 // MARK: - Pure Black Icon-Only Toolbar with Instant 0ms Tooltips (SwiftUI)
 
-public struct SnipasteToolbarSwiftUIView: View {
+public struct CaptureToolbarSwiftUIView: View {
     public let selectedTool: SnipAnnotationTool
     public let isRecordingSubbarExpanded: Bool
     public let detectedWindows: [DetectedWindowInfo]
@@ -2183,7 +2183,7 @@ public struct SnipasteToolbarSwiftUIView: View {
     public let onStartRecordingNow: () -> Void
     public let onPinToScreen: () -> Void
     public let onApplyImageEffect: (VisionImageEffect) -> Void
-    public let onVisionTool: (SnipasteVisionToolAction) -> Void
+    public let onVisionTool: (CaptureVisionToolAction) -> Void
     public let onOCRTranslate: () -> Void
     public let onOCRExtract: () -> Void
     public let onSaveFile: () -> Void

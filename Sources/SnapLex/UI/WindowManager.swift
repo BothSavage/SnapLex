@@ -19,6 +19,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     private var pillPanel: BorderlessKeyablePanel?
     private var cardPanel: BorderlessKeyablePanel?
+    private var cardResizeScheduled = false
     private var settingsWindow: NSWindow?
     private var translationHistoryWindow: NSWindow?
     private var screenshotHistoryWindow: NSWindow?
@@ -56,12 +57,12 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     private override init() {
         super.init()
-        setupSnipasteCallbacks()
+        setupCaptureCallbacks()
     }
 
-    private func setupSnipasteCallbacks() {
-        // When user clicks "翻译" on the Snipaste Capture Toolbar
-        SnipasteCaptureManager.shared.onOCRTranslateImage = { [weak self] image, screenRect in
+    private func setupCaptureCallbacks() {
+        // When user clicks "翻译" on the Capture Toolbar
+        CaptureManager.shared.onOCRTranslateImage = { [weak self] image, screenRect in
             guard let self = self else { return }
             self.lastAnchorPoint = CGPoint(x: screenRect.midX, y: screenRect.minY)
             Task { @MainActor in
@@ -78,8 +79,8 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             }
         }
 
-        // When user clicks "提取文字" on the Snipaste Capture Toolbar
-        SnipasteCaptureManager.shared.onOCRExtractText = { [weak self] image, screenRect in
+        // When user clicks "提取文字" on the Capture Toolbar
+        CaptureManager.shared.onOCRExtractText = { [weak self] image, screenRect in
             guard let self = self else { return }
             self.lastAnchorPoint = CGPoint(x: screenRect.midX, y: screenRect.minY)
             Task { @MainActor in
@@ -216,8 +217,12 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     /// Dynamically updates `cardPanel` size when async translation or dictionary text arrives, keeping the top edge anchored.
     public func resizeCardPanelToFitContent() {
-        guard let card = cardPanel, let hosting = card.contentView else { return }
-        DispatchQueue.main.async {
+        guard !cardResizeScheduled, cardPanel?.contentView != nil else { return }
+        cardResizeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.cardResizeScheduled = false
+            guard let card = self.cardPanel, let hosting = card.contentView else { return }
             hosting.invalidateIntrinsicContentSize()
             hosting.layoutSubtreeIfNeeded()
             let newSize = hosting.fittingSize
@@ -381,18 +386,18 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
         if dismissDashboardFirst {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                SnipasteCaptureManager.shared.startCapture()
+                CaptureManager.shared.startCapture()
             }
         } else {
-            SnipasteCaptureManager.shared.startCapture()
+            CaptureManager.shared.startCapture()
         }
     }
 
     public func triggerPinFlow() {
-        if SnipasteCaptureManager.shared.pinActiveSelectionIfCapturing() {
+        if CaptureManager.shared.pinActiveSelectionIfCapturing() {
             return
         }
-        SnipastePinManager.shared.pinFromClipboard()
+        PinManager.shared.pinFromClipboard()
     }
 
     public func showTranslationHistoryWindow() {
@@ -443,8 +448,8 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         let appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         [pillPanel, cardPanel, settingsWindow, translationHistoryWindow, screenshotHistoryWindow, dashboardWindow]
             .forEach { $0?.appearance = appearance }
-        SnipasteCaptureManager.shared.applyAppearance(appearance)
-        SnipastePinManager.shared.applyAppearance(appearance)
+        CaptureManager.shared.applyAppearance(appearance)
+        PinManager.shared.applyAppearance(appearance)
         ScrollingCaptureEngine.shared.applyAppearance(appearance)
         ScreenRecorderManager.shared.applyAppearance(appearance)
     }

@@ -146,5 +146,5 @@ jobs:
               fi
             done
           else
-            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --generate-notes
+            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --notes-file docs/release-installation.md --generate-notes
           fi

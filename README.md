@@ -55,6 +55,14 @@ SnapLex 将屏幕捕捉和语言学习工具放在同一个原生 macOS 应用�
 
 正式版发布后，可从 [GitHub Releases](https://github.com/BothSavage/SnapLex/releases/latest) 下载 macOS 安装包。
 
+如果下载的是未经公证的版本，首次打开时 macOS 可能阻止运行。确认应用来自可信的 SnapLex 发布页后，将 `SnapLex.app` 放入「应用程序」，在终端执行：
+
+```bash
+sudo xattr -rd com.apple.quarantine /Applications/SnapLex.app
+```
+
+系统提示输入的是当前 Mac 用户的管理员密码。**输入密码时终端不会显示任何字符，也不会显示星号；直接输入完成后按回车即可。** 如果应用不在「应用程序」文件夹，请改为实际路径，例如 `~/Downloads/SnapLex.app`；也可以输入 `sudo xattr -rd com.apple.quarantine `（末尾保留空格），再将应用图标拖入终端并按回车。
+
 ### 从源码构建
 
 需要 macOS 15 或更新版本，以及 Swift 5.10+。安装 Xcode Command Line Tools 后运行：

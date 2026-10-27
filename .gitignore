@@ -29,4 +29,4 @@ dist/
 *.db
 
 # Machine-specific local test recordings and diagnostic logs
-/docs/testing/runs/
+/docs/testing/

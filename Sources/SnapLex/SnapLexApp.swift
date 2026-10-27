@@ -90,7 +90,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         setupLocalShortcutMonitor()
         EscapeKeyManager.shared.start()
         SelectionAndHotKeyManager.shared.start()
-        SnipasteCaptureManager.shared.prewarm()
+        CaptureManager.shared.prewarm()
     }
 
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -247,11 +247,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         mgr.onTriggerRestoreLastPin = {
-            SnipastePinManager.shared.restoreLastClosedPin()
+            PinManager.shared.restoreLastClosedPin()
         }
 
         mgr.onTriggerUnlockClickThrough = {
-            SnipastePinManager.shared.unlockAllClickThroughPins()
+            PinManager.shared.unlockAllClickThroughPins()
         }
 
         mgr.onTriggerScreenRecorder = {
@@ -309,15 +309,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func restoreLastClosedPin() {
-        SnipastePinManager.shared.restoreLastClosedPin()
+        PinManager.shared.restoreLastClosedPin()
     }
 
     @objc private func toggleAllPinsVisibility() {
-        SnipastePinManager.shared.toggleHideAllPins()
+        PinManager.shared.toggleHideAllPins()
     }
 
     @objc private func closeAllPins() {
-        SnipastePinManager.shared.closeAllPins()
+        PinManager.shared.closeAllPins()
     }
 
     @objc private func openFloatingCard() {

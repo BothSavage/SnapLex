@@ -55,6 +55,14 @@ SnapLex brings screen capture and language tools together in a native macOS app.
 
 When a stable version is available, download the macOS package from [GitHub Releases](https://github.com/BothSavage/SnapLex/releases/latest).
 
+macOS may block an unnotarized download on first launch. After confirming the app came from the trusted SnapLex release page, move `SnapLex.app` to Applications and run:
+
+```bash
+sudo xattr -rd com.apple.quarantine /Applications/SnapLex.app
+```
+
+When prompted, enter your Mac administrator password. **The terminal does not show any characters or asterisks while you type; type the password and press Return.** If the app is elsewhere, use its actual path, such as `~/Downloads/SnapLex.app`. Alternatively, type `sudo xattr -rd com.apple.quarantine ` (including the trailing space), drag the app into Terminal, and press Return.
+
 ### Build from source
 
 Requires macOS 15 or later and Swift 5.10+. Install Xcode Command Line Tools, then run:

@@ -65,10 +65,10 @@ final class EscapeKeyManager {
     @discardableResult
     func dismissActiveWindow() -> EscapeDismissalTarget {
         let keyWindow = NSApp.keyWindow
-        let pins = SnipastePinManager.shared.activePins
+        let pins = PinManager.shared.activePins
         let target = EscapeKeyPolicy.dismissalTarget(
             isScrollingCaptureActive: ScrollingCaptureEngine.shared.isCaptureActive,
-            isScreenshotCaptureActive: SnipasteCaptureManager.shared.isCapturing,
+            isScreenshotCaptureActive: CaptureManager.shared.isCapturing,
             isRecordingCountdownActive: ScreenRecorderManager.shared.isCountingDown,
             keyWindowIsPin: keyWindow is PinnedImageWindow,
             hasVisibleKeyWindow: keyWindow?.isVisible == true,
@@ -81,18 +81,18 @@ final class EscapeKeyManager {
         case .scrollingCapture:
             ScrollingCaptureEngine.shared.cancelScrollingCapture()
         case .screenshotCapture:
-            SnipasteCaptureManager.shared.closeCapture()
+            CaptureManager.shared.closeCapture()
         case .recordingCountdown:
             ScreenRecorderManager.shared.dismissForEscape()
         case .pinnedWindow:
             if let pin = keyWindow as? PinnedImageWindow {
-                SnipastePinManager.shared.closePin(pin)
+                PinManager.shared.closePin(pin)
             }
         case .keyWindow:
             keyWindow?.orderOut(nil)
         case .visiblePin:
             if let pin = pins.last(where: \.isVisible) {
-                SnipastePinManager.shared.closePin(pin)
+                PinManager.shared.closePin(pin)
             }
         case .activeRecording:
             ScreenRecorderManager.shared.dismissForEscape()

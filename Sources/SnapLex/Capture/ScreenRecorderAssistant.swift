@@ -95,7 +95,7 @@ public final class ScreenRecorderManager: ObservableObject {
 
     /// Opens the unified F1 capture overlay with the Screen Recording Sub-Toolbar pre-selected!
     public func showAssistant(initialRegion: CGRect? = nil) {
-        SnipasteCaptureManager.shared.startCapture(openRecordingSubbar: true)
+        CaptureManager.shared.startCapture(openRecordingSubbar: true)
     }
 
     /// Starts recording the specified `screenRect` directly from the screenshot sub-toolbar!
@@ -218,7 +218,7 @@ public final class ScreenRecorderManager: ObservableObject {
 
     /// Take a screenshot at ANY time while recording without stopping the recording!
     public func takeSnapshotDuringRecording() {
-        SnipasteCaptureManager.shared.startCapture()
+        CaptureManager.shared.startCapture()
     }
 
     public func stopRecordingAndPromptSave() {

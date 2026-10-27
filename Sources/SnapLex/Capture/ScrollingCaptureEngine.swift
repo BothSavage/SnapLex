@@ -263,7 +263,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
         let displayX = round(max(vFrame.minX + 16, min(rect.midX - displayW / 2, vFrame.maxX - displayW - 16)))
         let displayY = round(max(vFrame.minY + 54, min(rect.maxY - displayH, vFrame.maxY - displayH - 16)))
         let displayRect = NSRect(x: displayX, y: displayY, width: displayW, height: displayH)
-        SnipastePinManager.shared.pinImage(img, at: displayRect)
+        PinManager.shared.pinImage(img, at: displayRect)
     }
 
     public func cancelScrollingCapture() {

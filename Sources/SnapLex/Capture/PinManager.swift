@@ -283,8 +283,8 @@ public struct InstantBlackStartRecordButton: View {
 }
 
 @MainActor
-public final class SnipastePinManager: ObservableObject {
-    public static let shared = SnipastePinManager()
+public final class PinManager: ObservableObject {
+    public static let shared = PinManager()
 
     @Published public private(set) var activePins: [PinnedImageWindow] = []
     @Published public private(set) var closedHistory: [PinHistoryRecord] = []
@@ -481,6 +481,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
 
     /// Outer Floating Black Toolbar Panel positioned OUTSIDE the pinned image!
     private var outerToolbarPanel: NSPanel?
+    private var outerToolbarFittingSize: NSSize?
     /// Companion floating badge window so Mouse Click-Through mode can ALWAYS be cancelled with 1 click!
     private var unlockClickThroughPanel: NSPanel?
     private var hideToolbarTask: Task<Void, Never>?
@@ -531,7 +532,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
             onSaveImage: { [weak self] in self?.saveImageToDisk() },
             onClose: { [weak self] in
                 guard let self = self else { return }
-                SnipastePinManager.shared.closePin(self)
+                PinManager.shared.closePin(self)
             }
         )
 
@@ -548,6 +549,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
     fileprivate func applyAppearance(_ appearance: NSAppearance?) {
         self.appearance = appearance
         outerToolbarPanel?.appearance = appearance
+        outerToolbarFittingSize = nil
         unlockClickThroughPanel?.appearance = appearance
     }
 
@@ -584,6 +586,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
             },
             onSubbarLayoutChanged: { [weak self] in
                 DispatchQueue.main.async {
+                    self?.outerToolbarFittingSize = nil
                     self?.showAndPositionOuterToolbar()
                 }
             },
@@ -604,7 +607,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
             onSaveImage: { [weak self] in self?.saveImageToDisk() },
             onClose: { [weak self] in
                 guard let self = self else { return }
-                SnipastePinManager.shared.closePin(self)
+                PinManager.shared.closePin(self)
             }
         )
 
@@ -645,9 +648,15 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
 
     private func showAndPositionOuterToolbar(forceReposition: Bool = false) {
         guard let panel = outerToolbarPanel, let hosting = panel.contentView else { return }
-        hosting.invalidateIntrinsicContentSize()
-        hosting.layoutSubtreeIfNeeded()
-        let fit = hosting.fittingSize
+        let fit: NSSize
+        if let cachedSize = outerToolbarFittingSize, !forceReposition {
+            fit = cachedSize
+        } else {
+            hosting.invalidateIntrinsicContentSize()
+            hosting.layoutSubtreeIfNeeded()
+            fit = hosting.fittingSize
+            outerToolbarFittingSize = fit
+        }
         let barW = max(440, fit.width)
         let barH = max(68, fit.height)
 
@@ -761,6 +770,9 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
 
     public func toggleInPlaceTranslation() {
         if viewModel.isInPlaceTranslated {
+            viewModel.pendingTranslationID = nil
+            viewModel.translationConfiguration = nil
+            viewModel.isTranslatingInPlace = false
             viewModel.isInPlaceTranslated = false
             viewModel.rebuildDisplayedImage()
             viewModel.showHUD(L10n.string("已还原原图"))
@@ -781,8 +793,11 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         viewModel.isTranslatingInPlace = true
         viewModel.showHUD(L10n.string("正在原位识别并贴合翻译..."))
         let srcImg = viewModel.displayedImage
+        let requestID = UUID()
+        viewModel.pendingTranslationID = requestID
         Task { @MainActor in
             let blocks = await InPlaceOCRService.shared.recognizeBlocks(in: srcImg)
+            guard self.viewModel.pendingTranslationID == requestID else { return }
             guard !blocks.isEmpty else {
                 self.viewModel.isTranslatingInPlace = false
                 self.viewModel.isInPlaceTranslated = false
@@ -792,7 +807,6 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
 
             self.viewModel.pendingTranslationBlocks = blocks
             self.viewModel.pendingTranslationImage = srcImg
-            self.viewModel.pendingTranslationID = UUID()
             if self.viewModel.ocrSidebarText.isEmpty {
                 self.viewModel.ocrSidebarText = blocks.map(\.originalText).joined(separator: "\n")
             }
@@ -814,7 +828,6 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
 
             if AppSettings.shared.translationEngine == .google {
                 self.viewModel.translationConfiguration = nil
-                let requestID = self.viewModel.pendingTranslationID
                 let targetLabel = AppSettings.targetLanguages.first(where: { $0.code == targetCode })?.label ?? "简体中文"
                 Task { @MainActor in
                     do {
@@ -838,12 +851,12 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                             requestID: requestID
                         )
                     } catch {
-                        guard self.viewModel.pendingTranslationID == requestID else { return }
-                        self.viewModel.isTranslatingInPlace = false
-                        self.viewModel.isInPlaceTranslated = false
-                        self.viewModel.showHUD(
-                            (error as? GoogleTranslationError)?.errorDescription
-                                ?? L10n.string("Google 翻译暂时无法连接，请检查网络后重试。")
+                        guard !Task.isCancelled, self.viewModel.pendingTranslationID == requestID else { return }
+                        // Reuse the pending OCR blocks and the native multi-language
+                        // pipeline when Google is unavailable or rate limited.
+                        self.viewModel.translationConfiguration = NativeTranslationSupport.makeConfiguration(
+                            source: sourceCode,
+                            target: targetCode
                         )
                     }
                 }
@@ -1141,24 +1154,24 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
     public func saveImageToDisk() {
         viewModel.commitInlineTextIfNeeded()
         let img = viewModel.renderFlattenedImage()
+        guard let imageSnapshot = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         panel.nameFieldStringValue = "SnapLex_Pin_\(formatter.string(from: Date())).png"
         if panel.runModal() == .OK, let url = panel.url {
-            if let tiff = img.tiffRepresentation,
-               let rep = NSBitmapImageRep(data: tiff),
-               let png = rep.representation(using: .png, properties: [:]) {
-                try? png.write(to: url)
-                viewModel.showHUD(L10n.string("已保存 PNG"))
+            Task { [weak self] in
+                let saved = await PNGImageWriter.write(imageSnapshot, to: url)
+                guard let self else { return }
+                self.viewModel.showHUD(L10n.string(saved ? "已保存 PNG" : "保存 PNG 失败"))
             }
         }
     }
 
     override public func keyDown(with event: NSEvent) {
         if EscapeKeyPolicy.isEscapeKeyCode(event.keyCode) {
-            SnipastePinManager.shared.closePin(self)
+            PinManager.shared.closePin(self)
             return
         }
         if viewModel.isEditingInlineText {
@@ -1168,7 +1181,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         switch event.keyCode {
         case 51: // Delete -> Close pin
-            SnipastePinManager.shared.closePin(self)
+            PinManager.shared.closePin(self)
         case 6 where flags.contains([.command, .shift]): // Cmd+Shift+Z -> Redo
             viewModel.redoAnnotation()
         case 6 where flags.contains(.command): // Cmd+Z -> Undo
@@ -1381,30 +1394,7 @@ fileprivate final class PinnedWindowViewModel: ObservableObject {
     }
 
     private static func transformImage(_ src: NSImage, rotationDegrees: Int, flipHorizontally: Bool) -> NSImage {
-        let swapAxes = (rotationDegrees % 180 != 0)
-        let dstSize = swapAxes
-            ? NSSize(width: src.size.height, height: src.size.width)
-            : src.size
-        guard dstSize.width > 1, dstSize.height > 1 else { return src }
-
-        let dst = NSImage(size: dstSize)
-        dst.lockFocus()
-        if let ctx = NSGraphicsContext.current?.cgContext {
-            ctx.translateBy(x: dstSize.width / 2, y: dstSize.height / 2)
-            if flipHorizontally {
-                ctx.scaleBy(x: -1, y: 1)
-            }
-            let radians = -CGFloat(rotationDegrees) * .pi / 180.0
-            ctx.rotate(by: radians)
-            src.draw(
-                in: NSRect(x: -src.size.width / 2, y: -src.size.height / 2, width: src.size.width, height: src.size.height),
-                from: .zero,
-                operation: .copy,
-                fraction: 1.0
-            )
-        }
-        dst.unlockFocus()
-        return dst
+        PixelPreservingImageRenderer.transform(src, rotationDegrees: rotationDegrees, flipHorizontally: flipHorizontally)
     }
 }
 

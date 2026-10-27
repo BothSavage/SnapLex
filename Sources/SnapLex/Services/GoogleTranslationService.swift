@@ -61,7 +61,7 @@ public final class GoogleTranslationService {
         guard let url = components.url else { throw GoogleTranslationError.invalidResponse }
 
         var request = URLRequest(url: url)
-        request.timeoutInterval = 15
+        request.timeoutInterval = 6
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15",
             forHTTPHeaderField: "User-Agent"

@@ -263,8 +263,8 @@ public final class TranslatorViewModel: ObservableObject {
                     self.usingAppleFallback = true
                     self.translationLogger.error("translation fallback request=\(requestID, privacy: .public) selectionRequest=\(selectionDiagnosticID ?? "-", privacy: .public) from=google to=apple errorType=\(String(reflecting: type(of: error)), privacy: .public)")
                     self.translationConfiguration = NativeTranslationSupport.makeConfiguration(
-                        source: NativeTranslationSupport.sourceLanguageCode(for: cleanedText),
-                        target: NativeTranslationSupport.languageCode(for: targetLang)
+                        source: source,
+                        target: target
                     )
                 }
             }

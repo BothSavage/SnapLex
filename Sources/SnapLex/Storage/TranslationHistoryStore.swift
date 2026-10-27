@@ -37,6 +37,7 @@ public final class TranslationHistoryStore: ObservableObject {
     private var database: OpaquePointer?
     private let databaseURL: URL
     private var termStatisticsCache: [TermStatisticsCacheKey: [TranslationTermStatistic]] = [:]
+    private var sourceLanguageCache: [String: String] = [:]
     private let shouldRecordSelection: () -> Bool
     private let shouldRecordScreenshot: () -> Bool
     private let now: () -> Date
@@ -313,7 +314,18 @@ public final class TranslationHistoryStore: ObservableObject {
     /// Chinese → English records contribute English words to word-frequency
     /// statistics, while keeping the Chinese original available as context.
     public func learningText(for entry: TranslationHistoryEntry) -> String {
-        let sourceLanguage = NativeTranslationSupport.sourceLanguageCode(for: entry.inputText)
+        let input = entry.inputText
+        let sourceLanguage: String
+        if let cached = sourceLanguageCache[input] {
+            sourceLanguage = cached
+        } else {
+            sourceLanguage = NativeTranslationSupport.sourceLanguageCode(for: input)
+            // Bound both the number and size of retained inputs.
+            if input.utf8.count <= 2_000 {
+                if sourceLanguageCache.count >= 1_024 { sourceLanguageCache.removeAll(keepingCapacity: true) }
+                sourceLanguageCache[input] = sourceLanguage
+            }
+        }
         return sourceLanguage == "zh" || sourceLanguage == "zh-TW"
             ? entry.translatedText
             : entry.inputText

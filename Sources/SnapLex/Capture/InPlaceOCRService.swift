@@ -105,39 +105,28 @@ public final class InPlaceOCRService: @unchecked Sendable {
         }
 
         let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-        let outImage = NSImage(size: size)
-        outImage.lockFocus()
+        return PixelPreservingImageRenderer.render(size: size, pixelWidth: cgImage.width, pixelHeight: cgImage.height) { _ in
+            baseImage.draw(in: NSRect(origin: .zero, size: size))
+            for block in blocks {
+                let textToDraw = block.translatedText.isEmpty ? block.originalText : block.translatedText
+                guard !textToDraw.isEmpty else { continue }
 
-        baseImage.draw(in: NSRect(origin: .zero, size: size))
+                // Vision coordinates and the output bitmap both use a bottom-left origin.
+                let rect = CGRect(
+                    x: block.normalizedRect.minX * size.width,
+                    y: block.normalizedRect.minY * size.height,
+                    width: block.normalizedRect.width * size.width,
+                    height: block.normalizedRect.height * size.height
+                ).insetBy(dx: -2, dy: -1.5)
 
-        for block in blocks {
-            let textToDraw = block.translatedText.isEmpty ? block.originalText : block.translatedText
-            guard !textToDraw.isEmpty else { continue }
-
-            // Vision normalizedRect is already bottom-left origin, matching NSImage lockFocus coordinates!
-            let rect = CGRect(
-                x: block.normalizedRect.minX * size.width,
-                y: block.normalizedRect.minY * size.height,
-                width: block.normalizedRect.width * size.width,
-                height: block.normalizedRect.height * size.height
-            ).insetBy(dx: -2, dy: -1.5)
-
-            guard rect.width >= 10, rect.height >= 8 else { continue }
-
-            // Sample background color from the edge pixels of this bounding box
-            let (bgColor, fgColor) = sampleBackgroundAndTextColors(in: rect, imageSize: size, bitmap: bitmapRep)
-
-            // Paint seamless background patch over the original text
-            let bgPath = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
-            bgColor.setFill()
-            bgPath.fill()
-
-            // Fit font size so the translated text fits cleanly inside `rect`
-            drawFittedText(textToDraw, in: rect.insetBy(dx: 2, dy: 1), textColor: fgColor)
-        }
-
-        outImage.unlockFocus()
-        return outImage
+                guard rect.width >= 10, rect.height >= 8 else { continue }
+                let (bgColor, fgColor) = sampleBackgroundAndTextColors(in: rect, imageSize: size, bitmap: bitmapRep)
+                let bgPath = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
+                bgColor.setFill()
+                bgPath.fill()
+                drawFittedText(textToDraw, in: rect.insetBy(dx: 2, dy: 1), textColor: fgColor)
+            }
+        } ?? baseImage
     }
 
     private static func sampleBackgroundAndTextColors(
