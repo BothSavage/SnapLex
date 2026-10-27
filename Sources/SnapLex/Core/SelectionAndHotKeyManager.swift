@@ -86,10 +86,6 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         if !hasStarted {
             hasStarted = true
             isAXTrusted = isAccessibilityTrusted(prompt: false)
-            if !isAXTrusted {
-                // Prompt macOS system Accessibility dialog on launch so mouse-select works immediately
-                _ = isAccessibilityTrusted(prompt: true)
-            }
             registerCarbonHotKeys()
             startPasteboardAndTrustMonitor()
         }

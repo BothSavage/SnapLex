@@ -102,6 +102,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         EscapeKeyManager.shared.start()
         SelectionAndHotKeyManager.shared.start()
         CaptureManager.shared.prewarm()
+        PermissionCoordinator.shared.refresh { snapshot in
+            let deferred = UserDefaults.standard.bool(forKey: "SnapLex.permissionGuideOptionalDeferred")
+            if snapshot.shouldPresentAtStartup(optionalDeferred: deferred) {
+                PermissionGuideWindow.shared.show()
+            }
+        }
     }
 
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -370,7 +376,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowManager.shared.showScreenshotHistoryWindow()
     }
 
-    @objc private func restartApp() {
+    @objc func restartApp() {
         // Wait for the old process to exit and release its single-instance lock
         // before asking Launch Services to start the same bundle again.
         let helper = Process()

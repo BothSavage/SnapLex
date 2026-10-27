@@ -109,6 +109,11 @@ public final class ScreenRecorderManager: ObservableObject {
             return
         }
 
+        if recordMicrophone && AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+            PermissionGuideWindow.shared.show(focusing: .microphone)
+            return
+        }
+
         self.targetScreenRect = screenRect
         recordingLogger.info("recording start accepted width=\(Int(screenRect.width), privacy: .public) height=\(Int(screenRect.height), privacy: .public) countdown=\(self.countdownSeconds, privacy: .public)")
 

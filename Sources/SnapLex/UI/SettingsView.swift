@@ -14,7 +14,6 @@ public struct SettingsView: View {
     @StateObject private var releaseUpdateChecker = GitHubReleaseUpdateService()
     @ObservedObject private var updateInstaller = NativeUpdateInstaller.shared
     @Environment(\.colorScheme) private var colorScheme
-    @State private var axTrusted: Bool = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: false)
     @State private var isPinned: Bool = WindowManager.shared.isSettingsPinned
     private let section: SettingsViewSection
 
@@ -74,6 +73,18 @@ public struct SettingsView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 20) {
                     if section == .all || section == .preferences {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                SectionHeaderLabel(title: L10n.string("权限设置"))
+                                Spacer()
+                                Button(L10n.string("打开权限引导")) { PermissionGuideWindow.shared.show() }
+                                    .buttonStyle(.plain)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(.blue)
+                            }
+                            PermissionStatusList()
+                        }
+
                         VStack(alignment: .leading, spacing: 10) {
                         SectionHeaderLabel(title: L10n.string("主题与语言"))
                         VStack(spacing: 0) {
@@ -153,54 +164,6 @@ public struct SettingsView: View {
                                 subtitle: L10n.string("需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏"),
                                 isOn: $settings.enableDoubleCmdC
                             )
-
-                            DividerLine()
-
-                            // Accessibility Status Row
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(L10n.string("macOS 辅助功能权限"))
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Color.primary.opacity(0.92))
-                                    Text(L10n.string(axTrusted ? "已授权，支持全局鼠标划词即弹" : "未授权，开启后可支持鼠标拖拽划词自动触发"))
-                                        .font(.system(size: 11.5))
-                                        .foregroundStyle(Color.primary.opacity(0.48))
-                                }
-
-                                Spacer()
-
-                                HStack(spacing: 8) {
-                                    HStack(spacing: 5) {
-                                        Circle()
-                                            .fill(axTrusted ? Color.primary : Color.primary.opacity(0.28))
-                                            .frame(width: 6, height: 6)
-                                        Text(L10n.string(axTrusted ? "已就绪" : "未开启"))
-                                            .font(.system(size: 11.5, weight: .medium))
-                                            .foregroundStyle(Color.primary.opacity(axTrusted ? 0.90 : 0.58))
-                                    }
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 4)
-                                    .background(
-                                        Capsule()
-                                            .fill(Color.primary.opacity(0.045))
-                                            .overlay(
-                                                Capsule().stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
-                                            )
-                                    )
-
-                                    if !axTrusted {
-                                        MonochromeActionPillButton(title: L10n.string("去授权")) {
-                                            axTrusted = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: true)
-                                        }
-                                    }
-
-                                    MonochromeIconPillButton(icon: "arrow.clockwise") {
-                                        axTrusted = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: false)
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
 
                             DividerLine()
 
@@ -399,7 +362,7 @@ public struct SettingsView: View {
         .snapLexAppearance()
         .onAppear {
             isPinned = WindowManager.shared.isSettingsPinned
-            axTrusted = SelectionAndHotKeyManager.shared.isAccessibilityTrusted(prompt: false)
+            PermissionCoordinator.shared.refresh()
             launchAtLogin.refreshStatus()
         }
     }
