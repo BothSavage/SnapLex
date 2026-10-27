@@ -36,7 +36,37 @@ if [[ -e "$OUTPUT_DIR/appcast.xml" ]]; then
     exit 1
 fi
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/snaplex-appcast.XXXXXX")"
-trap 'rm -rf "$STAGING_DIR"' EXIT
+MOUNT_DIR="$STAGING_DIR/mount"
+MOUNTED=0
+cleanup() {
+    if [[ "$MOUNTED" == 1 ]]; then hdiutil detach "$MOUNT_DIR" -quiet || true; fi
+    rm -rf "$STAGING_DIR"
+}
+trap cleanup EXIT
+mkdir -p "$MOUNT_DIR"
+hdiutil attach -readonly -nobrowse -noverify -quiet -mountpoint "$MOUNT_DIR" "$DMG_PATH"
+MOUNTED=1
+APP_PATH="$MOUNT_DIR/SnapLex.app"
+if [[ ! -d "$APP_PATH" ]]; then
+    echo "The update image must contain SnapLex.app." >&2
+    exit 1
+fi
+codesign --verify --deep --strict "$APP_PATH"
+SIGNATURE_INFO="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+DESIGNATED_REQUIREMENT="$(codesign -d -r- "$APP_PATH" 2>&1)"
+REQUIREMENT_UPPER="$(printf '%s' "$DESIGNATED_REQUIREMENT" | tr '[:lower:]' '[:upper:]')"
+if printf '%s\n' "$SIGNATURE_INFO" | grep -q '^Signature=adhoc' || \
+    ! printf '%s' "$REQUIREMENT_UPPER" | grep -q 'CERTIFICATE LEAF = H"[0-9A-F]\{40\}"'; then
+    echo "Updates must use a stable certificate-based code signature; ad-hoc signatures cannot preserve macOS permissions across builds." >&2
+    exit 1
+fi
+EXPECTED_CERT_SHA1="$(printf '%s' "${SNAPLEX_EXPECTED_SIGNING_CERT_SHA1:-}" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')"
+if [[ -n "$EXPECTED_CERT_SHA1" && "$REQUIREMENT_UPPER" != *"CERTIFICATE LEAF = H\"$EXPECTED_CERT_SHA1\""* ]]; then
+    echo "Update app was signed with a certificate other than the pinned SnapLex signing identity." >&2
+    exit 1
+fi
+hdiutil detach "$MOUNT_DIR" -quiet
+MOUNTED=0
 cp "$DMG_PATH" "$STAGING_DIR/$DMG_NAME"
 if [[ -n "$NOTES_PATH" ]]; then cp "$NOTES_PATH" "$STAGING_DIR/${DMG_NAME%.dmg}.md"; fi
 "$TOOLS/generate_appcast" --account "$ACCOUNT" --maximum-deltas 0 --embed-release-notes \

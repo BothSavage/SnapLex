@@ -5,6 +5,7 @@ enum ControlPanelAction: Equatable, Sendable {
     case recording
     case pinClipboard
     case openDashboard(DashboardSection)
+    case restart
     case quit
 }
 
@@ -15,6 +16,7 @@ struct ControlPanelActionHandlers {
     var onPinClipboard: () -> Void
     var onOpenDashboard: (DashboardSection) -> Void
     var onQuit: () -> Void
+    var onRestart: () -> Void = {}
 
     func perform(_ action: ControlPanelAction) {
         switch action {
@@ -26,6 +28,8 @@ struct ControlPanelActionHandlers {
             onPinClipboard()
         case let .openDashboard(section):
             onOpenDashboard(section)
+        case .restart:
+            onRestart()
         case .quit:
             onQuit()
         }

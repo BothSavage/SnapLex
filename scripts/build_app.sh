@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-APP_VERSION="${SNAPLEX_VERSION:-1.0.4}"
+APP_VERSION="${SNAPLEX_VERSION:-1.0.5}"
 APP_BUILD_NUMBER="${SNAPLEX_BUILD_NUMBER:-$APP_VERSION}"
 
 echo "==> [1/3] Compiling SnapLex (arm64 native release)..."
@@ -94,12 +94,28 @@ EOF
 
 echo "==> [3/3] Signing SnapLex.app..."
 SIGN_ID="${SNAPLEX_SIGN_IDENTITY:-}"
+SIGNING_KEYCHAIN="${SNAPLEX_SIGNING_KEYCHAIN:-}"
+if [ -z "$SIGNING_KEYCHAIN" ]; then
+    PERSISTENT_SIGNING_KEYCHAIN="${HOME}/Library/Application Support/SnapLex/Signing/SnapLex-Stable-Signing.keychain-db"
+    if [ -f "$PERSISTENT_SIGNING_KEYCHAIN" ]; then
+        LOGIN_KEYCHAIN="$(security login-keychain | sed -E 's/^[[:space:]]*"//; s/"$//')"
+        KEYCHAIN_PASSWORD="$(security find-generic-password -a "$(id -un)" -s io.github.snaplex.release-signing-keychain -w "$LOGIN_KEYCHAIN" 2>/dev/null || true)"
+        if [ -n "$KEYCHAIN_PASSWORD" ]; then
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$PERSISTENT_SIGNING_KEYCHAIN"
+            SIGNING_KEYCHAIN="$PERSISTENT_SIGNING_KEYCHAIN"
+        fi
+    fi
+fi
 if [ -z "$SIGN_ID" ]; then
-    SIGN_ID=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk '{print $2}' || true)
+    if [ -n "$SIGNING_KEYCHAIN" ]; then
+        SIGN_ID=$(security find-identity -p codesigning "$SIGNING_KEYCHAIN" | awk -F '"' '/SnapLex Stable Code Signing/ { print $2; exit }' || true)
+    else
+        SIGN_ID=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk '{print $2}' || true)
+    fi
 fi
 if [ -n "$SIGN_ID" ]; then
     if [ "${SNAPLEX_HARDENED_RUNTIME:-0}" = "1" ]; then
-        SIGN_OPTIONS=(--options runtime --timestamp)
+        SIGN_OPTIONS=(--options runtime)
     else
         SIGN_OPTIONS=()
     fi
@@ -113,12 +129,37 @@ else
 fi
 
 FRAMEWORK="$CONTENTS_DIR/Frameworks/Sparkle.framework"
-codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
-codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" --preserve-metadata=entitlements "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
-codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/Autoupdate"
-codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/Updater.app"
-codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$FRAMEWORK"
-codesign --force --sign "$SIGN_ID" "${SIGN_OPTIONS[@]}" "$APP_DIR"
+SIGNING_ARGS=(--force --sign "$SIGN_ID")
+if [ -n "$SIGNING_KEYCHAIN" ]; then
+    SIGNING_ARGS+=(--keychain "$SIGNING_KEYCHAIN")
+fi
+codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" --preserve-metadata=entitlements "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/Autoupdate"
+codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/Updater.app"
+codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$FRAMEWORK"
+codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$APP_DIR"
+
+# Release builds must use the persistent self-signed identity. Its certificate
+# leaf hash is checked against the value pinned in GitHub Actions variables.
+if [ "${SNAPLEX_REQUIRE_STABLE_SIGNING:-0}" = "1" ]; then
+    EXPECTED_CERT_SHA1="$(printf '%s' "${SNAPLEX_EXPECTED_SIGNING_CERT_SHA1:-}" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')"
+    if [[ ! "$EXPECTED_CERT_SHA1" =~ ^[0-9A-F]{40}$ ]]; then
+        echo "SNAPLEX_EXPECTED_SIGNING_CERT_SHA1 must contain the pinned 40-character certificate SHA-1." >&2
+        exit 1
+    fi
+    SIGNATURE_INFO="$(codesign -dv --verbose=4 "$APP_DIR" 2>&1)"
+    DESIGNATED_REQUIREMENT="$(codesign -d -r- "$APP_DIR" 2>&1)"
+    REQUIREMENT_UPPER="$(printf '%s' "$DESIGNATED_REQUIREMENT" | tr '[:lower:]' '[:upper:]')"
+    if printf '%s\n' "$SIGNATURE_INFO" | grep -q '^Signature=adhoc' || \
+        ! printf '%s' "$REQUIREMENT_UPPER" | grep -Fq "CERTIFICATE LEAF = H\"$EXPECTED_CERT_SHA1\""; then
+        echo "SnapLex.app was not signed with the pinned stable signing certificate." >&2
+        echo "Observed designated requirement: $DESIGNATED_REQUIREMENT" >&2
+        exit 1
+    fi
+    codesign --verify --deep --strict "$APP_DIR"
+    echo "   Stable signing certificate: $EXPECTED_CERT_SHA1"
+fi
 
 echo "✅ Done! App bundle created at: $APP_DIR"
 echo "   Binary size: $(du -sh "$MACOS_DIR/SnapLex" | cut -f1)"

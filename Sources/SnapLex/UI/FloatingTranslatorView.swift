@@ -271,8 +271,15 @@ public struct FloatingTranslatorView: View {
         .onChange(of: vm.isTranslating) { _, _ in
             WindowManager.shared.resizeCardPanelToFitContent()
         }
-        .translationTask(vm.translationConfiguration) { session in
-            await vm.translatePending(using: session)
+        .background {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityHidden(true)
+                .allowsHitTesting(false)
+                .translationTask(vm.translationConfiguration) { session in
+                    await vm.translatePending(using: session)
+                }
+                .id(vm.nativeTranslationSessionID)
         }
     }
 

@@ -8,6 +8,7 @@ public struct ControlPanelPopoverView: View {
     let onPinClipboard: () -> Void
     let onOpenDashboard: (DashboardSection) -> Void
     let onQuit: () -> Void
+    let onRestart: () -> Void
 
     @ObservedObject private var translations = TranslationHistoryStore.shared
     @ObservedObject private var screenshots = ScreenshotHistoryStore.shared
@@ -19,7 +20,8 @@ public struct ControlPanelPopoverView: View {
             onRecord: onRecord,
             onPinClipboard: onPinClipboard,
             onOpenDashboard: onOpenDashboard,
-            onQuit: onQuit
+            onQuit: onQuit,
+            onRestart: onRestart
         )
     }
 
@@ -49,13 +51,15 @@ public struct ControlPanelPopoverView: View {
         onRecord: @escaping () -> Void,
         onPinClipboard: @escaping () -> Void,
         onOpenDashboard: @escaping (DashboardSection) -> Void,
-        onQuit: @escaping () -> Void
+        onQuit: @escaping () -> Void,
+        onRestart: @escaping () -> Void
     ) {
         self.onScreenshot = onScreenshot
         self.onRecord = onRecord
         self.onPinClipboard = onPinClipboard
         self.onOpenDashboard = onOpenDashboard
         self.onQuit = onQuit
+        self.onRestart = onRestart
     }
 
     public var body: some View {
@@ -79,16 +83,34 @@ public struct ControlPanelPopoverView: View {
                 Button {
                     actionHandlers.perform(.openDashboard(.home))
                 } label: {
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.system(size: 14, weight: .medium))
-                        .frame(width: 30, height: 30)
-                        .background(Color.primary.opacity(0.055), in: Circle())
+                    Label(L10n.string("打开控制台"), systemImage: "rectangle.inset.filled.and.person.filled")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .foregroundStyle(.white)
+                        .background(Color.accentColor, in: Capsule())
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .help(L10n.string("打开控制台"))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
+
+            HStack(spacing: 10) {
+                Button { actionHandlers.perform(.restart) } label: {
+                    Label(L10n.string("重启 SnapLex"), systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                Button { actionHandlers.perform(.quit) } label: {
+                    Label(L10n.string("退出 SnapLex"), systemImage: "power")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
 
             Divider()
 
@@ -218,35 +240,6 @@ public struct ControlPanelPopoverView: View {
                 .padding(14)
             }
 
-            Divider()
-
-            HStack(spacing: 10) {
-                Button {
-                    actionHandlers.perform(.quit)
-                } label: {
-                    Image(systemName: "power")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(L10n.string("退出 SnapLex"))
-
-                Spacer()
-
-                Button {
-                    actionHandlers.perform(.openDashboard(.home))
-                } label: {
-                    Label(L10n.string("打开控制台"), systemImage: "rectangle.inset.filled.and.person.filled")
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .foregroundStyle(.white)
-                        .background(Color.accentColor, in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
         }
         .frame(width: 360, height: 600)
         .background(SnapLexTheme.toolbarBackground(for: colorScheme))
@@ -274,6 +267,7 @@ private struct ControlPanelActionButton: View {
             .frame(height: 58)
             .foregroundStyle(Color.primary.opacity(0.86))
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

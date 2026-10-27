@@ -49,7 +49,7 @@ private enum FastScreenCapture {
     }
 
     /// Captures all windows strictly BELOW `belowWindowID` so the overlay window can appear on screen in <1ms first!
-    static func captureScreen(quartzRect: CGRect, belowWindowID: CGWindowID) -> CGImage? {
+    static func captureScreen(quartzRect: CGRect, belowWindowID: CGWindowID, displayID: CGDirectDisplayID = CGMainDisplayID()) -> CGImage? {
         if let fn = windowListCreateImageFn {
             let option: CGWindowListOption = belowWindowID != kCGNullWindowID
                 ? .optionOnScreenBelowWindow
@@ -60,7 +60,7 @@ private enum FastScreenCapture {
             }
         }
         if let dispFn = displayCreateImageFn,
-           let img = dispFn(CGMainDisplayID())?.takeRetainedValue() {
+           let img = dispFn(displayID)?.takeRetainedValue() {
             return img
         }
         return nil
@@ -74,6 +74,8 @@ public final class CaptureManager: NSObject {
     public static let shared = CaptureManager()
 
     private var reusableWindow: CaptureOverlayWindow?
+    private var screenSwitchTimer: Timer?
+    private var activeScreenFrame: NSRect?
     public private(set) var isCapturing: Bool = false
 
     /// Callback when user clicks "💬 截图翻译"
@@ -117,7 +119,26 @@ public final class CaptureManager: NSObject {
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main else {
             return
         }
+        isCapturing = true
+        showCapture(on: screen, openRecordingSubbar: openRecordingSubbar)
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.followMouseAcrossScreens() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        screenSwitchTimer = timer
+    }
+
+    private func followMouseAcrossScreens() {
+        guard isCapturing, reusableWindow?.canvasView.canSwitchScreens == true else { return }
+        let point = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }),
+              screen.frame != activeScreenFrame else { return }
+        showCapture(on: screen, openRecordingSubbar: false)
+    }
+
+    private func showCapture(on screen: NSScreen, openRecordingSubbar: Bool) {
         let screenFrame = screen.frame
+        activeScreenFrame = screenFrame
 
         // 1. Enumerate visible windows (~0.5ms in memory)
         let detectedWindows = Self.detectVisibleWindows(for: screen)
@@ -137,7 +158,6 @@ public final class CaptureManager: NSObject {
             window = created
         }
 
-        isCapturing = true
         window.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         window.updateScreenFrame(screenFrame)
         window.level = .screenSaver
@@ -166,8 +186,9 @@ public final class CaptureManager: NSObject {
             height: screenFrame.height
         )
 
+        let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
         DispatchQueue.global(qos: .userInteractive).async { [weak self, weak window] in
-            guard let cgImage = FastScreenCapture.captureScreen(quartzRect: quartzRect, belowWindowID: winID) else {
+            guard let cgImage = FastScreenCapture.captureScreen(quartzRect: quartzRect, belowWindowID: winID, displayID: displayID) else {
                 return
             }
             DispatchQueue.main.async {
@@ -187,6 +208,9 @@ public final class CaptureManager: NSObject {
     public func closeCapture() {
         guard isCapturing else { return }
         isCapturing = false
+        screenSwitchTimer?.invalidate()
+        screenSwitchTimer = nil
+        activeScreenFrame = nil
         reusableWindow?.orderOut(nil)
         reusableWindow?.canvasView.clearSession()
     }
@@ -359,6 +383,11 @@ public final class CaptureCanvasView: NSView {
         }
     }
     public var hasLockedSelection: Bool = false
+    var canSwitchScreens: Bool {
+        guard !hasLockedSelection else { return false }
+        if case .none = interaction { return true }
+        return false
+    }
     private var hoveredWindow: DetectedWindowInfo?
     private var mouseLocationInView: CGPoint = .zero
 

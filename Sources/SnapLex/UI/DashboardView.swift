@@ -91,6 +91,7 @@ public struct DashboardView: View {
                                 .lineLimit(1)
                                 .padding(.horizontal, 11)
                                 .padding(.vertical, 9)
+                                .contentShape(Rectangle())
                                 .foregroundStyle(navigation.selectedSection == section ? Color.primary : Color.secondary)
                                 .background {
                                     if navigation.selectedSection == section {
@@ -424,6 +425,7 @@ private struct DashboardActionTile: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(13)
             .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

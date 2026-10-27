@@ -126,11 +126,30 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = SnapLexBrandLogo.makeMenuBarImage()
             button.imagePosition = .imageOnly
             button.target = self
-            button.action = #selector(toggleControlPopover)
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = L10n.string("打开控制台")
         }
         item.menu = nil
         controlPopover = nil
+    }
+
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            closeControlPopover()
+            let menu = NSMenu()
+            let dashboard = NSMenuItem(title: L10n.string("打开控制台"), action: #selector(openDashboardFromMenu), keyEquivalent: "")
+            let restart = NSMenuItem(title: L10n.string("重启 SnapLex"), action: #selector(restartApp), keyEquivalent: "")
+            let quit = NSMenuItem(title: L10n.string("退出 SnapLex"), action: #selector(quitApp), keyEquivalent: "")
+            for item in [dashboard, restart, quit] { item.target = self; menu.addItem(item) }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
+            return
+        }
+        toggleControlPopover()
+    }
+
+    @objc private func openDashboardFromMenu() {
+        WindowManager.shared.showDashboard(section: .home)
     }
 
     @objc private func toggleControlPopover() {
@@ -167,6 +186,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     onQuit: { [weak self] in
                         self?.closeControlPopover()
                         self?.quitApp()
+                    },
+                    onRestart: { [weak self] in
+                        self?.closeControlPopover()
+                        self?.restartApp()
                     }
                 )
             )
@@ -334,6 +357,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openScreenshotHistory() {
         WindowManager.shared.showScreenshotHistoryWindow()
+    }
+
+    @objc private func restartApp() {
+        // Wait for the old process to exit and release its single-instance lock
+        // before asking Launch Services to start the same bundle again.
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = ["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; /usr/bin/open -n \"$2\"", "snaplex-restart", String(getpid()), Bundle.main.bundleURL.path]
+        do {
+            try helper.run()
+            quitApp()
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.runModal()
+        }
     }
 
     @objc private func quitApp() {

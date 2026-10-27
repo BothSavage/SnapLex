@@ -27,95 +27,83 @@ jobs:
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
           echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
 
-      - name: Check publishing credentials
-        id: credentials
+      - name: Check release signing credentials
         env:
-          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_APPLICATION_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CERTIFICATE_BASE64: ${{ secrets.SNAPLEX_SIGNING_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.SNAPLEX_SIGNING_CERTIFICATE_PASSWORD }}
+          SIGNING_CERT_SHA1: ${{ vars.SNAPLEX_SIGNING_CERT_SHA1 }}
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         shell: bash
         run: |
-          present=0
-          for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID SPARKLE_EDDSA_PRIVATE_KEY; do
-            if [[ -n "${!name}" ]]; then present=$((present + 1)); fi
-          done
-          if [[ "$present" -eq 0 ]]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "No signing credentials configured; publish an unnotarized DMG manually."
-          elif [[ "$present" -eq 7 ]]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Signing credentials are incomplete; configure all seven secrets or remove them for manual publishing." >&2
-            exit 1
-          fi
-
-      - name: Import Developer ID certificate
-        if: steps.credentials.outputs.configured == 'true'
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_APPLICATION_IDENTITY }}
-        shell: bash
-        run: |
-          for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_IDENTITY; do
+          for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_CERT_SHA1 SPARKLE_EDDSA_PRIVATE_KEY; do
             if [[ -z "${!name}" ]]; then
-              echo "Required GitHub Actions secret is missing: $name" >&2
+              echo "Required release signing secret or variable is missing: $name" >&2
               exit 1
             fi
           done
+          if [[ ! "$SIGNING_CERT_SHA1" =~ ^([0-9A-Fa-f]{40}|([0-9A-Fa-f]{2}:){19}[0-9A-Fa-f]{2})$ ]]; then
+            echo "SNAPLEX_SIGNING_CERT_SHA1 must be a 40-character SHA-1 fingerprint." >&2
+            exit 1
+          fi
+
+      - name: Import stable self-signed code-signing identity
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.SNAPLEX_SIGNING_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.SNAPLEX_SIGNING_CERTIFICATE_PASSWORD }}
+          EXPECTED_CERT_SHA1: ${{ vars.SNAPLEX_SIGNING_CERT_SHA1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIGNING_IDENTITY="SnapLex Stable Code Signing"
+          EXPECTED_CERT_SHA1="$(printf '%s' "$EXPECTED_CERT_SHA1" | tr '[:lower:]' '[:upper:]' | tr -d ':')"
           KEYCHAIN_PATH="$RUNNER_TEMP/snaplex-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
-          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
-          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          CERTIFICATE_PATH="$RUNNER_TEMP/snaplex-signing.p12"
+          CERTIFICATE_PEM_PATH="$RUNNER_TEMP/snaplex-signing.pem"
+          CERTIFICATE_DER_PATH="$RUNNER_TEMP/snaplex-signing.cer"
+          printf '%s' "$CERTIFICATE_BASE64" | base64 -D > "$CERTIFICATE_PATH"
+          openssl pkcs12 -in "$CERTIFICATE_PATH" -clcerts -nokeys \
+            -passin env:CERTIFICATE_PASSWORD -out "$CERTIFICATE_PEM_PATH"
+          openssl x509 -in "$CERTIFICATE_PEM_PATH" -outform DER -out "$CERTIFICATE_DER_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN_PATH" "$CERTIFICATE_DER_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" "$HOME/Library/Keychains/login.keychain-db"
+
+          IDENTITY_LINE="$(security find-identity -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$SIGNING_IDENTITY\"" | head -n 1 || true)"
+          ACTUAL_CERT_SHA1="$(printf '%s' "$IDENTITY_LINE" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')"
+          if [[ "$ACTUAL_CERT_SHA1" != "$EXPECTED_CERT_SHA1" ]]; then
+            echo "Imported identity fingerprint does not match SNAPLEX_SIGNING_CERT_SHA1." >&2
+            exit 1
+          fi
+
           echo "SNAPLEX_SIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "SNAPLEX_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           echo "SNAPLEX_HARDENED_RUNTIME=1" >> "$GITHUB_ENV"
-          rm -f "$CERTIFICATE_PATH"
+          echo "SNAPLEX_REQUIRE_STABLE_SIGNING=1" >> "$GITHUB_ENV"
+          echo "SNAPLEX_EXPECTED_SIGNING_CERT_SHA1=$EXPECTED_CERT_SHA1" >> "$GITHUB_ENV"
+          rm -f "$CERTIFICATE_PATH" "$CERTIFICATE_PEM_PATH" "$CERTIFICATE_DER_PATH"
 
       - name: Build and package app
-        if: steps.credentials.outputs.configured == 'true'
         env:
           SNAPLEX_VERSION: ${{ steps.version.outputs.value }}
           SNAPLEX_BUILD_NUMBER: ${{ steps.version.outputs.value }}
         run: ./scripts/build_app.sh
 
-      - name: Create and notarize disk image
-        if: steps.credentials.outputs.configured == 'true'
+      - name: Create unnotarized disk image
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           RELEASE_VERSION: ${{ steps.version.outputs.value }}
           RELEASE_ARCH: ${{ steps.version.outputs.arch }}
         shell: bash
         run: |
-          for name in APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            if [[ -z "${!name}" ]]; then
-              echo "Required GitHub Actions secret is missing: $name" >&2
-              exit 1
-            fi
-          done
-          DMG_PATH="$RUNNER_TEMP/SnapLex-${RELEASE_VERSION}-macOS-${RELEASE_ARCH}.dmg"
-          xcrun notarytool store-credentials SnapLexNotary \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID"
+          DMG_PATH="$RUNNER_TEMP/SnapLex-${RELEASE_VERSION}-macOS-${RELEASE_ARCH}-unnotarized.dmg"
           hdiutil create -volname SnapLex -srcfolder dist/SnapLex.app -ov -format UDZO "$DMG_PATH"
-          xcrun notarytool submit "$DMG_PATH" --keychain-profile SnapLexNotary --wait
-          xcrun stapler staple "$DMG_PATH"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
 
       - name: Generate signed update feed
-        if: steps.credentials.outputs.configured == 'true'
         env:
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         shell: bash
@@ -130,7 +118,6 @@ jobs:
           echo "APPCAST_PATH=$RUNNER_TEMP/update-feed/appcast.xml" >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
-        if: steps.credentials.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.value }}

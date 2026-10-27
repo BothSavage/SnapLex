@@ -55,7 +55,7 @@ SnapLex brings screen capture and language tools together in a native macOS app.
 
 When a stable version is available, download the macOS package from [GitHub Releases](https://github.com/BothSavage/SnapLex/releases/latest).
 
-macOS may block an unnotarized download on first launch. After confirming the app came from the trusted SnapLex release page, move `SnapLex.app` to Applications and run:
+SnapLex uses a fixed self-signed certificate so macOS can keep the app's permission identity across updates. When moving from the ad-hoc-signed 1.0.4 release to the fixed-certificate build, macOS may ask you to grant permissions once; later releases with the same certificate should retain those grants. The certificate is not notarized, so macOS may block the first launch. After confirming the app came from the trusted SnapLex release page, move `SnapLex.app` to Applications and run:
 
 ```bash
 sudo xattr -rd com.apple.quarantine /Applications/SnapLex.app
@@ -88,7 +88,7 @@ Screenshots, screenshot history, and translation history are stored locally. If 
 
 ## Contributing
 
-Bug reports and improvement suggestions are welcome. See [RELEASING.md](RELEASING.md) for the release workflow and the GitHub Actions configuration required for signing and notarization.
+Bug reports and improvement suggestions are welcome. See [RELEASING.md](RELEASING.md) for the fixed signing identity and GitHub Actions release setup.
 
 ## License
 

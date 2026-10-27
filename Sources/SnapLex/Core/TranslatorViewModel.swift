@@ -28,6 +28,7 @@ public final class TranslatorViewModel: ObservableObject {
     @Published public var showOriginalText: Bool = false
     @Published public var showSystemDictDetail: Bool = false
     @Published public var translationConfiguration: TranslationSession.Configuration?
+    @Published public private(set) var nativeTranslationSessionID = UUID()
 
     private let googleTranslationService: GoogleTranslationService
     private let googleTranslator: @MainActor (String, String) async throws -> GoogleTranslationResult
@@ -43,6 +44,7 @@ public final class TranslatorViewModel: ObservableObject {
     private var preparedSelectionDiagnosticID: String?
     private(set) var activeSelectionDiagnosticID: String?
     private var googleTranslationTask: Task<Void, Never>?
+    private var nativeTranslationWatchdog: Task<Void, Never>?
     private var usingAppleFallback = false
     private var pendingEnglishSpeechRequestID: UUID?
     private var lastCompletedTranslationInput: String?
@@ -128,6 +130,8 @@ public final class TranslatorViewModel: ObservableObject {
         self.taskMode = mode
         googleTranslationTask?.cancel()
         googleTranslationTask = nil
+        nativeTranslationWatchdog?.cancel()
+        nativeTranslationWatchdog = nil
         translationRequestID = UUID()
         self.errorMessage = nil
         self.translatedOutput = ""
@@ -182,6 +186,8 @@ public final class TranslatorViewModel: ObservableObject {
         translationRequestID = UUID()
         googleTranslationTask?.cancel()
         googleTranslationTask = nil
+        nativeTranslationWatchdog?.cancel()
+        nativeTranslationWatchdog = nil
         usingAppleFallback = false
         activeTranslationInput = nil
         translationConfiguration = nil
@@ -193,6 +199,8 @@ public final class TranslatorViewModel: ObservableObject {
         lastCompletedTranslationInput = nil
         googleTranslationTask?.cancel()
         googleTranslationTask = nil
+        nativeTranslationWatchdog?.cancel()
+        nativeTranslationWatchdog = nil
         usingAppleFallback = false
         translatedOutput = ""
         googleDictionaryEntries = []
@@ -266,6 +274,7 @@ public final class TranslatorViewModel: ObservableObject {
                         source: source,
                         target: target
                     )
+                    self.startNativeTranslationWatchdog(requestID: self.translationRequestID)
                 }
             }
         case .apple:
@@ -279,6 +288,25 @@ public final class TranslatorViewModel: ObservableObject {
             } else {
                 translationConfiguration = NativeTranslationSupport.makeConfiguration(source: source, target: target)
             }
+            startNativeTranslationWatchdog(requestID: translationRequestID)
+        }
+    }
+
+    private func startNativeTranslationWatchdog(requestID: UUID) {
+        nativeTranslationWatchdog?.cancel()
+        // Give the translation modifier a fresh identity for every request,
+        // even when the source and target match a previous session.
+        nativeTranslationSessionID = UUID()
+        nativeTranslationWatchdog = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+            guard let self, self.translationRequestID == requestID, self.isTranslating else { return }
+            self.translationLogger.error("native translation timed out request=\(requestID.uuidString, privacy: .public)")
+            self.translationRequestID = UUID()
+            self.pendingEnglishSpeechRequestID = nil
+            self.isTranslating = false
+            self.translationConfiguration = nil
+            self.errorMessage = L10n.string("系统翻译等待超时，请检查语言包后重试。")
+            self.nativeTranslationWatchdog = nil
         }
     }
 
@@ -357,6 +385,8 @@ public final class TranslatorViewModel: ObservableObject {
                 translationLogger.debug("native translation result discarded request=\(requestIDLabel, privacy: .public) reason=stale-request")
                 return
             }
+            nativeTranslationWatchdog?.cancel()
+            nativeTranslationWatchdog = nil
             translatedOutput = translatedText
             lastCompletedTranslationInput = text
             speakPendingEnglishTranslation(for: requestID)
@@ -368,10 +398,14 @@ public final class TranslatorViewModel: ObservableObject {
         } catch is CancellationError {
             translationLogger.debug("native translation cancelled request=\(requestIDLabel, privacy: .public)")
             guard requestID == translationRequestID else { return }
+            nativeTranslationWatchdog?.cancel()
+            nativeTranslationWatchdog = nil
             pendingEnglishSpeechRequestID = nil
             isTranslating = false
         } catch {
             guard requestID == translationRequestID else { return }
+            nativeTranslationWatchdog?.cancel()
+            nativeTranslationWatchdog = nil
             pendingEnglishSpeechRequestID = nil
             isTranslating = false
             errorMessage = NativeTranslationSupport.userFacingError(for: error)

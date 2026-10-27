@@ -55,7 +55,7 @@ SnapLex 将屏幕捕捉和语言学习工具放在同一个原生 macOS 应用�
 
 正式版发布后，可从 [GitHub Releases](https://github.com/BothSavage/SnapLex/releases/latest) 下载 macOS 安装包。
 
-如果下载的是未经公证的版本，首次打开时 macOS 可能阻止运行。确认应用来自可信的 SnapLex 发布页后，将 `SnapLex.app` 放入「应用程序」，在终端执行：
+SnapLex 使用固定的自签名证书保持应用更新时的 macOS 权限身份。当前 ad-hoc 签名的 1.0.4 升级到固定证书版本时，系统可能要求重新授权一次；之后使用同一证书发布的版本通常可保留现有授权。该证书不提供 Apple 公证，因此首次打开时 macOS 可能阻止运行。确认应用来自可信的 SnapLex 发布页后，将 `SnapLex.app` 放入「应用程序」，在终端执行：
 
 ```bash
 sudo xattr -rd com.apple.quarantine /Applications/SnapLex.app
@@ -88,7 +88,7 @@ SnapLex 会在对应功能首次使用时请求 macOS 权限：
 
 ## 参与开发
 
-欢迎提交问题反馈和改进建议。发布流程、签名和公证所需的 GitHub Actions 配置见 [RELEASING.md](RELEASING.md)。
+欢迎提交问题反馈和改进建议。固定签名证书与 GitHub Actions 发布配置见 [RELEASING.md](RELEASING.md)。
 
 ## 开源协议
 
