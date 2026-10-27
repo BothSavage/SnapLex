@@ -154,6 +154,7 @@ private struct DashboardHomeView: View {
     @ObservedObject private var translations: TranslationHistoryStore
     @ObservedObject private var screenshots: ScreenshotHistoryStore
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var historyOverview = TranslationHistoryOverviewModel()
 
     init(navigation: DashboardNavigation, translations: TranslationHistoryStore, screenshots: ScreenshotHistoryStore) {
         _navigation = ObservedObject(wrappedValue: navigation)
@@ -166,23 +167,17 @@ private struct DashboardHomeView: View {
         return translations.entries.filter { $0.createdAt >= start }
     }
 
-    private var weekEntries: [TranslationHistoryEntry] {
-        let start = Calendar.current.date(byAdding: .day, value: -6, to: Calendar.current.startOfDay(for: Date())) ?? Date()
-        return translations.entries.filter { $0.createdAt >= start }
-    }
-
     private var dailyCounts: [DashboardDayCount] {
         let calendar = Calendar.current
-        let grouped = Dictionary(grouping: weekEntries) { calendar.startOfDay(for: $0.createdAt) }
         let today = calendar.startOfDay(for: Date())
         return (0..<7).compactMap { offset in
             guard let date = calendar.date(byAdding: .day, value: offset - 6, to: today) else { return nil }
-            return DashboardDayCount(date: date, count: grouped[date]?.count ?? 0)
+            return DashboardDayCount(date: date, count: historyOverview.week.dailyCounts[date] ?? 0)
         }
     }
 
     private var topTerms: [TranslationTermStatistic] {
-        translations.termStatistics(for: todayEntries).prefix(5).map { $0 }
+        Array(historyOverview.today.terms.prefix(5))
     }
 
     public var body: some View {
@@ -205,13 +200,13 @@ private struct DashboardHomeView: View {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                     DashboardMetricCard(
                         title: L10n.string("今日翻译次数"),
-                        value: "\(todayEntries.count)",
+                        value: historyOverview.isLoading ? "…" : historyOverview.failed ? "—" : "\(historyOverview.today.count)",
                         detail: L10n.string("划词翻译和截图翻译"),
                         icon: "character.book.closed"
                     )
                     DashboardMetricCard(
                         title: L10n.string("近 7 天翻译次数"),
-                        value: "\(weekEntries.count)",
+                        value: historyOverview.isLoading ? "…" : historyOverview.failed ? "—" : "\(historyOverview.week.count)",
                         detail: L10n.string("每日翻译频率"),
                         icon: "chart.bar.xaxis"
                     )
@@ -302,7 +297,9 @@ private struct DashboardHomeView: View {
                                 navigation.select(.translations)
                             }
                         }
-                        if topTerms.isEmpty {
+                        if historyOverview.isLoading {
+                            ProgressView().frame(maxWidth: .infinity, minHeight: 70)
+                        } else if topTerms.isEmpty {
                             DashboardEmptyCard(title: L10n.string("今天还没有翻译记录"), icon: "textformat.abc")
                         } else {
                             VStack(spacing: 0) {
@@ -373,6 +370,7 @@ private struct DashboardHomeView: View {
         }
         .background(SnapLexTheme.toolbarBackground(for: colorScheme))
         .snapLexAppearance()
+        .task(id: translations.revision) { await historyOverview.load(store: translations) }
     }
 
     private var dashboardCardBackground: some ShapeStyle {

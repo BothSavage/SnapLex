@@ -38,8 +38,23 @@ fi
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/snaplex-appcast.XXXXXX")"
 MOUNT_DIR="$STAGING_DIR/mount"
 MOUNTED=0
+detach_image() {
+    for attempt in 1 2 3 4 5; do
+        if hdiutil detach "$MOUNT_DIR" -quiet; then
+            MOUNTED=0
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Could not detach the release image at $MOUNT_DIR." >&2
+    return 1
+}
 cleanup() {
-    if [[ "$MOUNTED" == 1 ]]; then hdiutil detach "$MOUNT_DIR" -quiet || true; fi
+    if [[ "$MOUNTED" == 1 ]] && ! detach_image; then
+        # Never descend into a still-mounted, read-only image during cleanup.
+        echo "Temporary files were left at $STAGING_DIR for manual cleanup." >&2
+        return
+    fi
     rm -rf "$STAGING_DIR"
 }
 trap cleanup EXIT
@@ -65,8 +80,7 @@ if [[ -n "$EXPECTED_CERT_SHA1" && "$REQUIREMENT_UPPER" != *"CERTIFICATE LEAF = H
     echo "Update app was signed with a certificate other than the pinned SnapLex signing identity." >&2
     exit 1
 fi
-hdiutil detach "$MOUNT_DIR" -quiet
-MOUNTED=0
+detach_image
 cp "$DMG_PATH" "$STAGING_DIR/$DMG_NAME"
 if [[ -n "$NOTES_PATH" ]]; then cp "$NOTES_PATH" "$STAGING_DIR/${DMG_NAME%.dmg}.md"; fi
 "$TOOLS/generate_appcast" --account "$ACCOUNT" --maximum-deltas 0 --embed-release-notes \

@@ -2,6 +2,10 @@
   "defaultLanguage": "zh-Hans",
   "translations": {
     "zh-Hans": {
+      "搜索当前时间范围内的原文、译文和来源应用": "搜索当前时间范围内的原文、译文和来源应用",
+      "搜索翻译记录": "搜索翻译记录",
+      "加载翻译记录失败": "加载翻译记录失败",
+      "重试": "重试",
       "%@  [单击选择此窗口录制]": "%@  [单击选择此窗口录制]",
       "%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)": "%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)",
       "%@录制": "%@录制",
@@ -435,6 +439,10 @@
       "将鼠标划词和快捷键触发的翻译加入记录": "将鼠标划词和快捷键触发的翻译加入记录"
     },
     "en": {
+      "搜索当前时间范围内的原文、译文和来源应用": "Search the original, translation, and source app within the selected time range",
+      "搜索翻译记录": "Search translations",
+      "加载翻译记录失败": "Could not load translation history",
+      "重试": "Retry",
       "%@  [单击选择此窗口录制]": "%@  [click to record this window]",
       "%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)": "%@  ·  %d × %d  (click to select, or drag to select an area)",
       "%@录制": "Record %@",
@@ -868,6 +876,10 @@
       "将鼠标划词和快捷键触发的翻译加入记录": "Save translations triggered by text selection and shortcuts."
     },
     "zh-Hant": {
+      "搜索当前时间范围内的原文、译文和来源应用": "搜尋目前時間範圍內的原文、譯文和來源應用程式",
+      "搜索翻译记录": "搜尋翻譯紀錄",
+      "加载翻译记录失败": "載入翻譯紀錄失敗",
+      "重试": "重試",
       "%@  [单击选择此窗口录制]": "%@ [點選選擇此視窗錄製]",
       "%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)": "%@ · %d × %d (點選選取視窗 / 拖曳自由框選)",
       "%@录制": "%@ 錄製",
@@ -1301,6 +1313,10 @@
       "将鼠标划词和快捷键触发的翻译加入记录": "將滑鼠劃詞與快捷鍵觸發的翻譯加入記錄。"
     },
     "ja": {
+      "搜索当前时间范围内的原文、译文和来源应用": "選択した期間内の原文、訳文、元のアプリを検索",
+      "搜索翻译记录": "翻訳履歴を検索",
+      "加载翻译记录失败": "翻訳履歴を読み込めませんでした",
+      "重试": "再試行",
       "%@  [单击选择此窗口录制]": "%@ [クリックしてこのウィンドウを記録]",
       "%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)": "%@ · %d × %d (クリックして選択するか、ドラッグして領域を選択します)",
       "%@录制": "レコード %@",
@@ -1734,6 +1750,10 @@
       "将鼠标划词和快捷键触发的翻译加入记录": "マウス選択とショートカットで開始した翻訳を記録します。"
     },
     "ko": {
+      "搜索当前时间范围内的原文、译文和来源应用": "선택한 기간의 원문, 번역문 및 출처 앱 검색",
+      "搜索翻译记录": "번역 기록 검색",
+      "加载翻译记录失败": "번역 기록을 불러오지 못했습니다",
+      "重试": "다시 시도",
       "%@  [单击选择此窗口录制]": "%@ [이 창을 기록하려면 클릭하세요.]",
       "%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)": "%@ · %d × %d (클릭하여 선택하거나 드래그하여 영역 선택)",
       "%@录制": "%@ 기록",
@@ -2167,6 +2187,10 @@
       "将鼠标划词和快捷键触发的翻译加入记录": "마우스 선택과 단축키로 실행한 번역을 저장합니다."
     },
     "fr": {
+      "搜索当前时间范围内的原文、译文和来源应用": "Rechercher le texte original, la traduction et l’application source dans la période sélectionnée",
+      "搜索翻译记录": "Rechercher dans les traductions",
+      "加载翻译记录失败": "Impossible de charger l’historique des traductions",
+      "重试": "Réessayer",
       "%@  [单击选择此窗口录制]": "%@ [cliquez pour enregistrer cette fenêtre]",
       "%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)": "%@ · %d × %d (cliquez pour sélectionner ou faites glisser pour sélectionner une zone)",
       "%@录制": "Enregistrer %@",
@@ -2600,6 +2624,10 @@
       "将鼠标划词和快捷键触发的翻译加入记录": "Enregistrer les traductions lancées par sélection ou raccourci."
     },
     "de": {
+      "搜索当前时间范围内的原文、译文和来源应用": "Originaltext, Übersetzung und Quell-App im ausgewählten Zeitraum durchsuchen",
+      "搜索翻译记录": "Übersetzungen durchsuchen",
+      "加载翻译记录失败": "Übersetzungsverlauf konnte nicht geladen werden",
+      "重试": "Erneut versuchen",
       "%@  [单击选择此窗口录制]": "%@ [Klicken Sie, um dieses Fenster aufzuzeichnen]",
       "%@  ·  %d × %d  (单击选中窗口 / 拖拽自由框选)": "%@ · %d × %d (zum Auswählen klicken oder ziehen, um einen Bereich auszuwählen)",
       "%@录制": "Nehmen Sie %@ auf",

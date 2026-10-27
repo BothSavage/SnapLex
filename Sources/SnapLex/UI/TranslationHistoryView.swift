@@ -15,6 +15,13 @@ private struct TranslationHistoryDay: Identifiable {
     var id: Date { day }
 }
 
+private struct QueryRequest: Hashable {
+    let period: TranslationHistoryPeriod
+    let search: String
+    let revision: UInt64
+    let retry: Int
+}
+
 public struct TranslationHistoryView: View {
     @ObservedObject private var store: TranslationHistoryStore
     @Environment(\.colorScheme) private var colorScheme
@@ -22,19 +29,15 @@ public struct TranslationHistoryView: View {
     @State private var mode: TranslationHistoryMode = .terms
     @State private var showingIgnoredWords = false
     @State private var showingClearConfirmation = false
+    @State private var search = ""
+    @State private var retry = 0
+    @StateObject private var query = TranslationHistoryQueryModel()
 
-    private var filteredEntries: [TranslationHistoryEntry] {
-        let now = Date()
-        let calendar = Calendar.current
-        return store.entries.filter { period.includes($0.createdAt, now: now, calendar: calendar) }
-    }
-
-    private func dailyCounts(for entries: [TranslationHistoryEntry]) -> [TranslationHistoryDay] {
+    private func dailyCounts() -> [TranslationHistoryDay] {
         let calendar = Calendar.current
         let now = Date()
-        let entriesByDay = Dictionary(grouping: entries) { calendar.startOfDay(for: $0.createdAt) }
         return period.days(now: now, calendar: calendar).map { date in
-            TranslationHistoryDay(day: date, count: entriesByDay[date]?.count ?? 0)
+            TranslationHistoryDay(day: date, count: query.summary.dailyCounts[date] ?? 0)
         }
     }
 
@@ -44,8 +47,8 @@ public struct TranslationHistoryView: View {
     }
 
     public var body: some View {
-        let entries = filteredEntries
-        let statistics = store.termStatistics(for: entries)
+        let entries = query.entries
+        let statistics = query.summary.terms
         return VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -78,15 +81,28 @@ public struct TranslationHistoryView: View {
             }
             .pickerStyle(.segmented)
 
+            TextField(L10n.string("搜索翻译记录"), text: $search)
+                .textFieldStyle(.roundedBorder)
+                .help(L10n.string("搜索当前时间范围内的原文、译文和来源应用"))
+
+            if query.failed {
+                HStack {
+                    Text(L10n.string("加载翻译记录失败"))
+                        .foregroundStyle(.secondary)
+                    Button(L10n.string("重试")) { retry += 1 }
+                }
+                .font(.system(size: 11.5))
+            }
+
             HStack(spacing: 12) {
-                metricCard(title: L10n.string("翻译次数"), value: "\(entries.count)", icon: "character.book.closed")
-                metricCard(title: L10n.string("词汇数量"), value: "\(statistics.count)", icon: "textformat.abc")
+                metricCard(title: L10n.string("翻译次数"), value: query.isLoading ? "…" : "\(query.summary.count)", icon: "character.book.closed")
+                metricCard(title: L10n.string("词汇数量"), value: query.isLoading ? "…" : "\(statistics.count)", icon: "textformat.abc")
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text(L10n.string("翻译频率"))
                     .font(.system(size: 13, weight: .semibold))
-                Chart(dailyCounts(for: entries)) { item in
+                Chart(dailyCounts()) { item in
                     BarMark(
                         x: .value(L10n.string("日期"), item.day, unit: .day),
                         y: .value(L10n.string("翻译次数"), item.count)
@@ -127,6 +143,12 @@ public struct TranslationHistoryView: View {
         .frame(minWidth: 720, minHeight: 650)
         .background(SnapLexTheme.toolbarBackground(for: colorScheme))
         .snapLexAppearance()
+        .task(id: QueryRequest(period: period, search: search, revision: store.revision, retry: retry)) {
+            if !search.isEmpty {
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+            }
+            await query.load(store: store, period: period, search: search)
+        }
         .sheet(isPresented: $showingIgnoredWords) {
             IgnoredTranslationWordsView(store: store)
         }
@@ -145,7 +167,9 @@ public struct TranslationHistoryView: View {
     private func recordsList(_ entries: [TranslationHistoryEntry]) -> some View {
         ScrollView {
             LazyVStack(spacing: 8) {
-                if entries.isEmpty {
+                if entries.isEmpty && query.isLoading {
+                    ProgressView().frame(maxWidth: .infinity, minHeight: 180)
+                } else if entries.isEmpty {
                     ContentUnavailableView(
                         L10n.string("没有翻译记录"),
                         systemImage: "text.book.closed",
@@ -192,6 +216,14 @@ public struct TranslationHistoryView: View {
                         .padding(12)
                         .background(cardBackground)
                     }
+                    if query.hasMore {
+                        ProgressView()
+                            .padding()
+                            .id(entries.last?.id)
+                            .onAppear {
+                                Task { await query.loadMore(store: store) }
+                            }
+                    }
                 }
             }
         }
@@ -200,7 +232,9 @@ public struct TranslationHistoryView: View {
     private func termsList(_ statistics: [TranslationTermStatistic]) -> some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                if statistics.isEmpty {
+                if query.isLoading {
+                    ProgressView().frame(maxWidth: .infinity, minHeight: 180)
+                } else if statistics.isEmpty {
                     ContentUnavailableView(
                         L10n.string("没有词频数据"),
                         systemImage: "textformat.abc",

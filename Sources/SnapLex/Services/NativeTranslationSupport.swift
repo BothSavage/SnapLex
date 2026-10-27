@@ -8,12 +8,12 @@ public enum TranslationTaskMode: String {
 
 @MainActor
 public enum NativeTranslationSupport {
-    private static let supportedLanguageIdentifiers: Set<String> = [
+    nonisolated private static let supportedLanguageIdentifiers: Set<String> = [
         "ar-AE", "de", "en", "es", "fr", "hi", "id", "it", "ja", "ko",
         "nl", "pl", "pt-BR", "ru", "th", "tr", "uk", "vi", "zh", "zh-TW"
     ]
 
-    public static func isPredominantlyChinese(_ text: String) -> Bool {
+    nonisolated public static func isPredominantlyChinese(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
@@ -45,7 +45,7 @@ public enum NativeTranslationSupport {
 
     /// Prefer identifiers from Apple's supportedLanguages list (for example `zh` and
     /// `en`, rather than the broader aliases `zh-Hans` and `en-US`).
-    public static func sourceLanguageCode(for text: String) -> String {
+    nonisolated public static func sourceLanguageCode(for text: String) -> String {
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(String(text.prefix(2_000)))
 
@@ -98,7 +98,7 @@ public enum NativeTranslationSupport {
         }
     }
 
-    private static func normalizedSupportedIdentifier(for identifier: String) -> String? {
+    nonisolated private static func normalizedSupportedIdentifier(for identifier: String) -> String? {
         switch identifier {
         case "zh", "zh-Hans", "zh-CN": return "zh"
         case "zh-Hant", "zh-TW": return "zh-TW"

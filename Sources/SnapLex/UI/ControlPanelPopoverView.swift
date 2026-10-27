@@ -14,6 +14,7 @@ public struct ControlPanelPopoverView: View {
     @ObservedObject private var translations = TranslationHistoryStore.shared
     @ObservedObject private var screenshots = ScreenshotHistoryStore.shared
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var historyOverview = TranslationHistoryOverviewModel()
 
     private var actionHandlers: ControlPanelActionHandlers {
         ControlPanelActionHandlers(
@@ -26,25 +27,17 @@ public struct ControlPanelPopoverView: View {
         )
     }
 
-    private var lastDayEntries: [TranslationHistoryEntry] {
-        let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
-        return translations.entries.filter { $0.createdAt >= cutoff }
-    }
-
     private var recentDailyCounts: [DashboardDayCount] {
         let calendar = Calendar.current
-        let cutoff = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: Date())) ?? Date()
-        let recent = translations.entries.filter { $0.createdAt >= cutoff }
-        let grouped = Dictionary(grouping: recent) { calendar.startOfDay(for: $0.createdAt) }
         let today = calendar.startOfDay(for: Date())
         return (0..<7).compactMap { offset in
             guard let date = calendar.date(byAdding: .day, value: offset - 6, to: today) else { return nil }
-            return DashboardDayCount(date: date, count: grouped[date]?.count ?? 0)
+            return DashboardDayCount(date: date, count: historyOverview.week.dailyCounts[date] ?? 0)
         }
     }
 
     private var frequentTerms: [TranslationTermStatistic] {
-        Array(translations.termStatistics(for: lastDayEntries).prefix(3))
+        Array(historyOverview.lastDay.terms.prefix(3))
     }
 
     public init(
@@ -186,7 +179,7 @@ public struct ControlPanelPopoverView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text("\(lastDayEntries.count)")
+                            Text(historyOverview.isLoading ? "…" : historyOverview.failed ? "—" : "\(historyOverview.lastDay.count)")
                                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                             Text(L10n.string("次"))
                                 .font(.system(size: 10.5))
@@ -247,6 +240,7 @@ public struct ControlPanelPopoverView: View {
         .frame(width: 360, height: 600)
         .background(SnapLexTheme.toolbarBackground(for: colorScheme))
         .snapLexAppearance()
+        .task(id: translations.revision) { await historyOverview.load(store: translations) }
         .onAppear { screenshots.reload() }
     }
 

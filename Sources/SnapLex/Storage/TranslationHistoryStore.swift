@@ -33,9 +33,10 @@ public final class TranslationHistoryStore: ObservableObject {
 
     @Published public private(set) var entries: [TranslationHistoryEntry] = []
     @Published public private(set) var ignoredWords: [String] = []
+    @Published public private(set) var revision: UInt64 = 0
 
     private var database: OpaquePointer?
-    private let databaseURL: URL
+    let databaseURL: URL
     private var termStatisticsCache: [TermStatisticsCacheKey: [TranslationTermStatistic]] = [:]
     private var sourceLanguageCache: [String: String] = [:]
     private let shouldRecordSelection: () -> Bool
@@ -85,6 +86,11 @@ public final class TranslationHistoryStore: ObservableObject {
             withIntermediateDirectories: true
         )
         sqlite3_open(databaseURL.path, &database)
+        // Readers may scan a large range while new translations are recorded.
+        // WAL lets those background reads coexist with the short write path.
+        if sqlite3_exec(database, "PRAGMA journal_mode=WAL;", nil, nil, nil) != SQLITE_OK {
+            historyLogger.error("translation history WAL setup failed sqliteCode=\(sqlite3_errcode(self.database), privacy: .public)")
+        }
         createTables()
         reload()
     }
@@ -155,7 +161,9 @@ public final class TranslationHistoryStore: ObservableObject {
                 || (existing.createdAt == entry.createdAt && existing.id < entry.id)
         } ?? entries.endIndex
         entries.insert(entry, at: insertionIndex)
+        if entries.count > 50 { entries.removeLast(entries.count - 50) }
         termStatisticsCache.removeAll(keepingCapacity: true)
+        revision &+= 1
         let elapsedMilliseconds = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
         historyLogger.debug("translation history inserted id=\(entry.id, privacy: .public) source=\(sourceKind, privacy: .public) totalEntries=\(self.entries.count, privacy: .public) milliseconds=\(elapsedMilliseconds, privacy: .public)")
     }
@@ -169,7 +177,7 @@ public final class TranslationHistoryStore: ObservableObject {
         SELECT id, input_text, translated_text, source_language, target_language,
                source_app, source_kind, created_at
         FROM translation_history
-        ORDER BY created_at DESC, id DESC;
+        ORDER BY created_at DESC, id DESC LIMIT 50;
         """
         var statement: OpaquePointer?
         if sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK {
@@ -199,6 +207,7 @@ public final class TranslationHistoryStore: ObservableObject {
         }
         sqlite3_finalize(statement)
         ignoredWords = loadedIgnored
+        revision &+= 1
         let elapsedMilliseconds = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
         historyLogger.info("translation history reloaded entries=\(loadedEntries.count, privacy: .public) ignoredTerms=\(loadedIgnored.count, privacy: .public) milliseconds=\(elapsedMilliseconds, privacy: .public)")
     }
@@ -218,6 +227,7 @@ public final class TranslationHistoryStore: ObservableObject {
         ignoredWords.append(cleanWord)
         ignoredWords.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         termStatisticsCache.removeAll(keepingCapacity: true)
+        revision &+= 1
     }
 
     public func removeIgnoredWord(_ word: String) {
@@ -233,6 +243,7 @@ public final class TranslationHistoryStore: ObservableObject {
         guard result == SQLITE_DONE, sqlite3_changes(database) > 0 else { return }
         ignoredWords.removeAll { Self.normalized($0) == normalizedWord }
         termStatisticsCache.removeAll(keepingCapacity: true)
+        revision &+= 1
     }
 
     public func deleteEntry(id: Int64) {
@@ -242,8 +253,7 @@ public final class TranslationHistoryStore: ObservableObject {
         let result = sqlite3_step(statement)
         sqlite3_finalize(statement)
         guard result == SQLITE_DONE, sqlite3_changes(database) > 0 else { return }
-        entries.removeAll { $0.id == id }
-        termStatisticsCache.removeAll(keepingCapacity: true)
+        reload()
     }
 
     public func deleteAllEntries() {
@@ -253,6 +263,7 @@ public final class TranslationHistoryStore: ObservableObject {
         }
         entries = []
         termStatisticsCache.removeAll(keepingCapacity: true)
+        revision &+= 1
     }
 
     public func termStatistics(for entries: [TranslationHistoryEntry]) -> [TranslationTermStatistic] {
@@ -361,12 +372,12 @@ public final class TranslationHistoryStore: ObservableObject {
         return String(cString: text)
     }
 
-    private static func normalized(_ term: String) -> String {
+    nonisolated static func normalized(_ term: String) -> String {
         term.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func words(in text: String) -> [String] {
+    nonisolated static func words(in text: String) -> [String] {
         let tokenizer = NLTokenizer(unit: .word)
         tokenizer.string = text
         var words: [String] = []
