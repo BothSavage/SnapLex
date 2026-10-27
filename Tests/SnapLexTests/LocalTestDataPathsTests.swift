@@ -12,7 +12,9 @@ final class LocalTestDataPathsTests: XCTestCase {
             environment: [LocalTestDataPaths.rootEnvironmentKey: temporaryRoot.path]
         ))
 
-        XCTAssertEqual(resolved, temporaryRoot)
+        // Foundation's directory URL trailing-slash representation differs
+        // between macOS releases; compare the canonical filesystem paths.
+        XCTAssertEqual(resolved.path, temporaryRoot.resolvingSymlinksInPath().standardizedFileURL.path)
     }
 
     func testOverrideOutsideTemporaryRootFailsClosedIntoTemporaryStorage() throws {
