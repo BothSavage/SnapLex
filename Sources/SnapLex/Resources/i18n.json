@@ -94,7 +94,6 @@
       "原文对照": "原文对照",
       "去开启": "去开启",
       "去授权": "去授权",
-      "双击 ⌘C 呼出划词控制栏": "双击 ⌘C 呼出划词控制栏",
       "双击⌘C": "双击⌘C",
       "取消 (Esc)": "取消 (Esc)",
       "取消固定": "取消固定",
@@ -123,7 +122,6 @@
       "实心": "实心",
       "导出格式：": "导出格式：",
       "将截图识别并翻译的内容加入记录": "将截图识别并翻译的内容加入记录",
-      "将鼠标划词、快捷键和双击复制触发的翻译加入记录": "将鼠标划词、快捷键和双击复制触发的翻译加入记录",
       "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)": "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)",
       "屏幕截图": "屏幕截图",
       "屏幕贴图 (将选区或剪贴板钉在桌面)": "屏幕贴图 (将选区或剪贴板钉在桌面)",
@@ -216,7 +214,6 @@
       "无法生成图片效果。": "无法生成图片效果。",
       "无法识别原文语言，请多选一些完整句子后重试。": "无法识别原文语言，请多选一些完整句子后重试。",
       "无法读取这张图片。": "无法读取这张图片。",
-      "需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏": "需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏",
       "日期": "日期",
       "日本語": "日本語",
       "时间范围": "时间范围",
@@ -397,6 +394,7 @@
       "发现可用更新": "发现可用更新",
       "发现新版本 %@": "发现新版本 %@",
       "此版本需要手动安装": "此版本需要手动安装",
+      "立即更新": "立即更新",
       "下载并安装": "下载并安装",
       "正在准备更新…": "正在准备更新…",
       "正在下载更新…": "正在下载更新…",
@@ -433,7 +431,8 @@
       "输入监控": "输入监控",
       "部分权限开启后可能需要重新启动 SnapLex。": "部分权限开启后可能需要重新启动 SnapLex。",
       "麦克风是可选的，可稍后设置。": "麦克风是可选的，可稍后设置。",
-      "开启麦克风权限后，请重新开始录屏。": "开启麦克风权限后，请重新开始录屏。"
+      "开启麦克风权限后，请重新开始录屏。": "开启麦克风权限后，请重新开始录屏。",
+      "将鼠标划词和快捷键触发的翻译加入记录": "将鼠标划词和快捷键触发的翻译加入记录"
     },
     "en": {
       "%@  [单击选择此窗口录制]": "%@  [click to record this window]",
@@ -528,7 +527,6 @@
       "原文对照": "Show original text",
       "去开启": "Enable",
       "去授权": "Grant Access",
-      "双击 ⌘C 呼出划词控制栏": "Double-press ⌘C to show the selection bar",
       "双击⌘C": "Double click ⌘C",
       "取消 (Esc)": "Cancel (Esc)",
       "取消固定": "Unpin window",
@@ -557,7 +555,6 @@
       "实心": "Filled",
       "导出格式：": "Export format:",
       "将截图识别并翻译的内容加入记录": "Save text recognized and translated from screenshots.",
-      "将鼠标划词、快捷键和双击复制触发的翻译加入记录": "Save translations triggered by text selection, shortcuts, and double-copy.",
       "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)": "Record a region, window, or full screen as MP4 or GIF",
       "屏幕截图": "Screenshot",
       "屏幕贴图 (将选区或剪贴板钉在桌面)": "Pin a selection or clipboard image to the desktop",
@@ -650,7 +647,6 @@
       "无法生成图片效果。": "The image effect could not be rendered.",
       "无法识别原文语言，请多选一些完整句子后重试。": "The source language could not be identified. Select a longer passage and try again.",
       "无法读取这张图片。": "This image could not be read.",
-      "需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏": "Accessibility permission is needed to detect editable fields and prevent accidental pop-ups. Press ⌘C twice to show the selection bar.",
       "日期": "Date",
       "日本語": "日本語",
       "时间范围": "Date Range",
@@ -831,6 +827,7 @@
       "发现可用更新": "An update is available",
       "发现新版本 %@": "Version %@ is available",
       "此版本需要手动安装": "This version requires manual installation",
+      "立即更新": "Update Now",
       "下载并安装": "Download and Install",
       "正在准备更新…": "Preparing update…",
       "正在下载更新…": "Downloading update…",
@@ -867,7 +864,8 @@
       "输入监控": "Input Monitoring",
       "部分权限开启后可能需要重新启动 SnapLex。": "Some permissions may require restarting SnapLex.",
       "麦克风是可选的，可稍后设置。": "The microphone is optional and can be set up later.",
-      "开启麦克风权限后，请重新开始录屏。": "After enabling microphone access, start the recording again."
+      "开启麦克风权限后，请重新开始录屏。": "After enabling microphone access, start the recording again.",
+      "将鼠标划词和快捷键触发的翻译加入记录": "Save translations triggered by text selection and shortcuts."
     },
     "zh-Hant": {
       "%@  [单击选择此窗口录制]": "%@ [點選選擇此視窗錄製]",
@@ -962,7 +960,6 @@
       "原文对照": "原文對照",
       "去开启": "去開啟",
       "去授权": "去授權",
-      "双击 ⌘C 呼出划词控制栏": "雙擊 ⌘C 呼出劃詞控制欄",
       "双击⌘C": "按兩下⌘C",
       "取消 (Esc)": "取消 (Esc)",
       "取消固定": "取消固定",
@@ -991,7 +988,6 @@
       "实心": "實心",
       "导出格式：": "導出格式：",
       "将截图识别并翻译的内容加入记录": "將截圖辨識並翻譯的內容加入記錄",
-      "将鼠标划词、快捷键和双击复制触发的翻译加入记录": "將滑鼠劃詞、快速鍵和連按兩次複製觸發的翻譯加入記錄",
       "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)": "螢幕錄製 (區域 / 視窗 / 全螢幕匯出 MP4 · GIF)",
       "屏幕截图": "螢幕截圖",
       "屏幕贴图 (将选区或剪贴板钉在桌面)": "螢幕貼圖 (將選取範圍或剪貼簿釘在桌面)",
@@ -1084,7 +1080,6 @@
       "无法生成图片效果。": "無法產生圖片效果。",
       "无法识别原文语言，请多选一些完整句子后重试。": "無法辨識原文語言，請多選一些完整句子後重試。",
       "无法读取这张图片。": "無法讀取這張圖。",
-      "需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏": "需要輔助使用權限以安全識別輸入框；連續按兩次 ⌘C 呼出控制欄",
       "日期": "日期",
       "日本語": "日本語",
       "时间范围": "時間範圍",
@@ -1265,6 +1260,7 @@
       "发现可用更新": "有可用更新",
       "发现新版本 %@": "新版本 %@ 已推出",
       "此版本需要手动安装": "此版本需要手動安裝",
+      "立即更新": "立即更新",
       "下载并安装": "下載並安裝",
       "正在准备更新…": "正在準備更新…",
       "正在下载更新…": "正在下載更新…",
@@ -1301,7 +1297,8 @@
       "输入监控": "輸入監控",
       "部分权限开启后可能需要重新启动 SnapLex。": "部分權限開啟後可能需要重新啟動 SnapLex。",
       "麦克风是可选的，可稍后设置。": "麥克風為選用，可稍後設定。",
-      "开启麦克风权限后，请重新开始录屏。": "開啟麥克風權限後，請重新開始錄影。"
+      "开启麦克风权限后，请重新开始录屏。": "開啟麥克風權限後，請重新開始錄影。",
+      "将鼠标划词和快捷键触发的翻译加入记录": "將滑鼠劃詞與快捷鍵觸發的翻譯加入記錄。"
     },
     "ja": {
       "%@  [单击选择此窗口录制]": "%@ [クリックしてこのウィンドウを記録]",
@@ -1396,7 +1393,6 @@
       "原文对照": "元のテキストを表示",
       "去开启": "有効にする",
       "去授权": "アクセスを許可する",
-      "双击 ⌘C 呼出划词控制栏": "⌘C を 2 回押して選択バーを表示します",
       "双击⌘C": "⌘C をダブルクリックします",
       "取消 (Esc)": "キャンセル (Esc)",
       "取消固定": "ウィンドウの固定を解除する",
@@ -1425,7 +1421,6 @@
       "实心": "満たされた",
       "导出格式：": "エクスポート形式:",
       "将截图识别并翻译的内容加入记录": "スクリーンショットから認識して翻訳した内容を記録します",
-      "将鼠标划词、快捷键和双击复制触发的翻译加入记录": "マウス選択、ショートカット、コピーのダブルタップで翻訳した内容を記録します",
       "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)": "領域、ウィンドウ、または全画面を MP4 または GIF として記録します",
       "屏幕截图": "スクリーンショット",
       "屏幕贴图 (将选区或剪贴板钉在桌面)": "選択した画像またはクリップボードの画像をデスクトップに固定する",
@@ -1518,7 +1513,6 @@
       "无法生成图片效果。": "画像効果をレンダリングできませんでした。",
       "无法识别原文语言，请多选一些完整句子后重试。": "ソース言語を特定できませんでした。より長い文章を選択して、もう一度試してください。",
       "无法读取这张图片。": "この画像は読み取れませんでした。",
-      "需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏": "入力欄を安全に判定するためアクセシビリティ許可が必要です。⌘C を 2 回押すと選択バーを表示します。",
       "日期": "日付",
       "日本語": "日本語",
       "时间范围": "期間",
@@ -1699,6 +1693,7 @@
       "发现可用更新": "アップデートがあります",
       "发现新版本 %@": "バージョン %@ が利用できます",
       "此版本需要手动安装": "このバージョンは手動でインストールする必要があります",
+      "立即更新": "今すぐアップデート",
       "下载并安装": "ダウンロードしてインストール",
       "正在准备更新…": "アップデートを準備中…",
       "正在下载更新…": "アップデートをダウンロード中…",
@@ -1735,7 +1730,8 @@
       "输入监控": "入力監視",
       "部分权限开启后可能需要重新启动 SnapLex。": "権限を有効にした後、SnapLex の再起動が必要な場合があります。",
       "麦克风是可选的，可稍后设置。": "マイクは任意で、後から設定できます。",
-      "开启麦克风权限后，请重新开始录屏。": "マイクのアクセスを許可したら、もう一度録画を開始してください。"
+      "开启麦克风权限后，请重新开始录屏。": "マイクのアクセスを許可したら、もう一度録画を開始してください。",
+      "将鼠标划词和快捷键触发的翻译加入记录": "マウス選択とショートカットで開始した翻訳を記録します。"
     },
     "ko": {
       "%@  [单击选择此窗口录制]": "%@ [이 창을 기록하려면 클릭하세요.]",
@@ -1830,7 +1826,6 @@
       "原文对照": "원본 텍스트 표시",
       "去开启": "활성화",
       "去授权": "액세스 권한 부여",
-      "双击 ⌘C 呼出划词控制栏": "선택 막대를 표시하려면 ⌘C를 두 번 누르세요.",
       "双击⌘C": "더블클릭 ⌘C",
       "取消 (Esc)": "취소(Esc)",
       "取消固定": "창 고정 해제",
@@ -1859,7 +1854,6 @@
       "实心": "채워짐",
       "导出格式：": "내보내기 형식:",
       "将截图识别并翻译的内容加入记录": "스크린샷에서 인식하고 번역한 내용을 저장합니다.",
-      "将鼠标划词、快捷键和双击复制触发的翻译加入记录": "마우스 선택, 단축키, 복사 두 번 누르기로 실행한 번역을 저장합니다.",
       "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)": "영역, 창 또는 전체 화면을 MP4 또는 GIF로 녹화",
       "屏幕截图": "스크린샷",
       "屏幕贴图 (将选区或剪贴板钉在桌面)": "선택 항목 또는 클립보드 이미지를 바탕 화면에 고정",
@@ -1952,7 +1946,6 @@
       "无法生成图片效果。": "이미지 효과를 렌더링할 수 없습니다.",
       "无法识别原文语言，请多选一些完整句子后重试。": "소스 언어를 식별할 수 없습니다. 더 긴 구절을 선택하고 다시 시도하세요.",
       "无法读取这张图片。": "이 이미지를 읽을 수 없습니다.",
-      "需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏": "입력란을 안전하게 감지하려면 손쉬운 사용 권한이 필요합니다. ⌘C를 두 번 눌러 선택 막대를 표시하세요.",
       "日期": "날짜",
       "日本語": "日本語",
       "时间范围": "기간",
@@ -2133,6 +2126,7 @@
       "发现可用更新": "사용 가능한 업데이트가 있습니다",
       "发现新版本 %@": "버전 %@을(를) 사용할 수 있습니다",
       "此版本需要手动安装": "이 버전은 수동으로 설치해야 합니다",
+      "立即更新": "지금 업데이트",
       "下载并安装": "다운로드 및 설치",
       "正在准备更新…": "업데이트 준비 중…",
       "正在下载更新…": "업데이트 다운로드 중…",
@@ -2169,7 +2163,8 @@
       "输入监控": "입력 모니터링",
       "部分权限开启后可能需要重新启动 SnapLex。": "일부 권한을 켠 후 SnapLex를 재시작해야 할 수 있습니다.",
       "麦克风是可选的，可稍后设置。": "마이크 권한은 선택 사항이며 나중에 설정할 수 있습니다.",
-      "开启麦克风权限后，请重新开始录屏。": "마이크 권한을 허용한 후 녹화를 다시 시작하세요."
+      "开启麦克风权限后，请重新开始录屏。": "마이크 권한을 허용한 후 녹화를 다시 시작하세요.",
+      "将鼠标划词和快捷键触发的翻译加入记录": "마우스 선택과 단축키로 실행한 번역을 저장합니다."
     },
     "fr": {
       "%@  [单击选择此窗口录制]": "%@ [cliquez pour enregistrer cette fenêtre]",
@@ -2264,7 +2259,6 @@
       "原文对照": "Afficher le texte original",
       "去开启": "Activer",
       "去授权": "Accorder l'accès",
-      "双击 ⌘C 呼出划词控制栏": "Appuyez deux fois sur ⌘C pour afficher la barre de sélection",
       "双击⌘C": "Double-cliquez sur ⌘C",
       "取消 (Esc)": "Annuler (Échap)",
       "取消固定": "Détacher la fenêtre",
@@ -2293,7 +2287,6 @@
       "实心": "Rempli",
       "导出格式：": "Format d'exportation :",
       "将截图识别并翻译的内容加入记录": "Enregistrer le texte reconnu et traduit depuis les captures.",
-      "将鼠标划词、快捷键和双击复制触发的翻译加入记录": "Enregistrer les traductions lancées par sélection, raccourci ou double copie.",
       "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)": "Enregistrez une région, une fenêtre ou un plein écran au format MP4 ou GIF",
       "屏幕截图": "Capture d'écran",
       "屏幕贴图 (将选区或剪贴板钉在桌面)": "Épingler une sélection ou une image du presse-papiers sur le bureau",
@@ -2386,7 +2379,6 @@
       "无法生成图片效果。": "L'effet d'image n'a pas pu être rendu.",
       "无法识别原文语言，请多选一些完整句子后重试。": "La langue source n'a pas pu être identifiée. Sélectionnez un passage plus long et réessayez.",
       "无法读取这张图片。": "Cette image n'a pas pu être lue.",
-      "需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏": "L’autorisation d’accessibilité est nécessaire pour détecter les champs de saisie et éviter les ouvertures accidentelles. Appuyez deux fois sur ⌘C pour afficher la barre de sélection.",
       "日期": "Date",
       "日本語": "日本語",
       "时间范围": "Période",
@@ -2567,6 +2559,7 @@
       "发现可用更新": "Une mise à jour est disponible",
       "发现新版本 %@": "La version %@ est disponible",
       "此版本需要手动安装": "Cette version doit être installée manuellement",
+      "立即更新": "Mettre à jour",
       "下载并安装": "Télécharger et installer",
       "正在准备更新…": "Préparation de la mise à jour…",
       "正在下载更新…": "Téléchargement de la mise à jour…",
@@ -2603,7 +2596,8 @@
       "输入监控": "Surveillance des entrées",
       "部分权限开启后可能需要重新启动 SnapLex。": "Certaines autorisations peuvent nécessiter de redémarrer SnapLex.",
       "麦克风是可选的，可稍后设置。": "Le microphone est facultatif et peut être configuré plus tard.",
-      "开启麦克风权限后，请重新开始录屏。": "Après avoir autorisé le microphone, relancez l’enregistrement."
+      "开启麦克风权限后，请重新开始录屏。": "Après avoir autorisé le microphone, relancez l’enregistrement.",
+      "将鼠标划词和快捷键触发的翻译加入记录": "Enregistrer les traductions lancées par sélection ou raccourci."
     },
     "de": {
       "%@  [单击选择此窗口录制]": "%@ [Klicken Sie, um dieses Fenster aufzuzeichnen]",
@@ -2698,7 +2692,6 @@
       "原文对照": "Originaltext anzeigen",
       "去开启": "Aktivieren",
       "去授权": "Zugriff gewähren",
-      "双击 ⌘C 呼出划词控制栏": "Drücken Sie zweimal ⌘C, um die Auswahlleiste anzuzeigen",
       "双击⌘C": "Doppelklicken Sie auf ⌘C",
       "取消 (Esc)": "Abbrechen (Esc)",
       "取消固定": "Fenster lösen",
@@ -2727,7 +2720,6 @@
       "实心": "Gefüllt",
       "导出格式：": "Exportformat:",
       "将截图识别并翻译的内容加入记录": "Erkannten und übersetzten Screenshot-Text speichern.",
-      "将鼠标划词、快捷键和双击复制触发的翻译加入记录": "Übersetzungen aus Auswahl, Tastenkürzel und doppeltem Kopieren speichern.",
       "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)": "Zeichnen Sie einen Bereich, ein Fenster oder einen Vollbildmodus als MP4 oder GIF auf",
       "屏幕截图": "Screenshot",
       "屏幕贴图 (将选区或剪贴板钉在桌面)": "Heften Sie ein Auswahl- oder Zwischenablagebild an den Desktop an",
@@ -2820,7 +2812,6 @@
       "无法生成图片效果。": "Der Bildeffekt konnte nicht gerendert werden.",
       "无法识别原文语言，请多选一些完整句子后重试。": "Die Ausgangssprache konnte nicht identifiziert werden. Wählen Sie eine längere Passage aus und versuchen Sie es erneut.",
       "无法读取这张图片。": "Dieses Bild konnte nicht gelesen werden.",
-      "需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏": "Die Bedienungshilfen-Berechtigung erkennt Eingabefelder und verhindert versehentliche Einblendungen. Drücken Sie zweimal ⌘C, um die Auswahlleiste anzuzeigen.",
       "日期": "Datum",
       "日本語": "日本語",
       "时间范围": "Zeitraum",
@@ -3001,6 +2992,7 @@
       "发现可用更新": "Ein Update ist verfügbar",
       "发现新版本 %@": "Version %@ ist verfügbar",
       "此版本需要手动安装": "Diese Version muss manuell installiert werden",
+      "立即更新": "Jetzt aktualisieren",
       "下载并安装": "Laden und installieren",
       "正在准备更新…": "Update wird vorbereitet…",
       "正在下载更新…": "Update wird geladen…",
@@ -3037,7 +3029,8 @@
       "输入监控": "Eingabeüberwachung",
       "部分权限开启后可能需要重新启动 SnapLex。": "Einige Berechtigungen erfordern möglicherweise einen Neustart von SnapLex.",
       "麦克风是可选的，可稍后设置。": "Das Mikrofon ist optional und kann später eingerichtet werden.",
-      "开启麦克风权限后，请重新开始录屏。": "Starte die Aufnahme erneut, nachdem du den Mikrofonzugriff erlaubt hast."
+      "开启麦克风权限后，请重新开始录屏。": "Starte die Aufnahme erneut, nachdem du den Mikrofonzugriff erlaubt hast.",
+      "将鼠标划词和快捷键触发的翻译加入记录": "Übersetzungen aus Textauswahl und Tastenkürzeln speichern."
     }
   }
 }

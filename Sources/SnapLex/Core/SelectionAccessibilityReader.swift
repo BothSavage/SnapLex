@@ -23,16 +23,6 @@ struct SelectionAXSnapshot: Equatable, Sendable {
     let timedOut: Bool
 }
 
-struct SelectionAXFocusSnapshot: Sendable {
-    let target: SelectionAXTargetKind
-    let durationMilliseconds: Int
-    let queueWaitMilliseconds: Int
-    let workerDurationMilliseconds: Int
-    let accessibilityCallCount: Int
-    let lastAccessibilityError: Int32?
-    let timedOut: Bool
-}
-
 /// Performs cross-process Accessibility IPC on one serial worker queue.
 /// It never logs or writes the selected text to the pasteboard.
 final class SelectionAccessibilityReader: @unchecked Sendable {
@@ -72,48 +62,6 @@ final class SelectionAccessibilityReader: @unchecked Sendable {
         let target: SelectionAXTargetKind
         let selectedText: String?
         let ancestorLimitReached: Bool
-    }
-
-    func inspectFocusedTarget(processIdentifier: pid_t) async -> SelectionAXFocusSnapshot {
-        let enqueuedAt = DispatchTime.now().uptimeNanoseconds
-        return await withCheckedContinuation { continuation in
-            queue.async {
-                let startedAt = DispatchTime.now().uptimeNanoseconds
-                let timing = self.makeTimingBudget(enqueuedAt: enqueuedAt)
-                var context = self.makeContext(startedAt: startedAt, timing: timing)
-                guard timing.shouldStartWorker(at: startedAt), self.hasTime(context) else {
-                    context.timedOut = true
-                    self.logger.info("focused AX request rejected before IPC reason=queue-wait-exceeded queueWaitMs=\((startedAt - enqueuedAt) / 1_000_000, privacy: .public)")
-                    continuation.resume(returning: self.focusSnapshot(
-                        target: .unavailable,
-                        enqueuedAt: enqueuedAt,
-                        startedAt: startedAt,
-                        context: context,
-                        timedOut: true
-                    ))
-                    return
-                }
-                let appElement = AXUIElementCreateApplication(processIdentifier)
-                guard let focused = self.focusedElement(in: appElement, context: &context),
-                      let inspection = self.inspect(focused, context: &context) else {
-                    continuation.resume(returning: self.focusSnapshot(
-                        target: .unavailable,
-                        enqueuedAt: enqueuedAt,
-                        startedAt: startedAt,
-                        context: context,
-                        timedOut: !self.hasTime(context)
-                    ))
-                    return
-                }
-                continuation.resume(returning: self.focusSnapshot(
-                    target: inspection.target,
-                    enqueuedAt: enqueuedAt,
-                    startedAt: startedAt,
-                    context: context,
-                    timedOut: !self.hasTime(context)
-                ))
-            }
-        }
     }
 
     func inspectSelection(
@@ -541,25 +489,6 @@ final class SelectionAccessibilityReader: @unchecked Sendable {
             accessibilityCallCount: context.callCount,
             lastAccessibilityError: context.lastError,
             timedOut: timedOut
-        )
-    }
-
-    private func focusSnapshot(
-        target: SelectionAXTargetKind,
-        enqueuedAt: UInt64,
-        startedAt: UInt64,
-        context: RequestContext,
-        timedOut: Bool
-    ) -> SelectionAXFocusSnapshot {
-        let completedAt = DispatchTime.now().uptimeNanoseconds
-        return SelectionAXFocusSnapshot(
-            target: target,
-            durationMilliseconds: Int((completedAt - enqueuedAt) / 1_000_000),
-            queueWaitMilliseconds: Int((startedAt - enqueuedAt) / 1_000_000),
-            workerDurationMilliseconds: Int((completedAt - startedAt) / 1_000_000),
-            accessibilityCallCount: context.callCount,
-            lastAccessibilityError: context.lastError,
-            timedOut: timedOut || context.timedOut
         )
     }
 

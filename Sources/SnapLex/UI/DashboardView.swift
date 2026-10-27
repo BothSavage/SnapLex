@@ -52,6 +52,8 @@ public struct DashboardView: View {
     private let translationStore: TranslationHistoryStore
     private let screenshotStore: ScreenshotHistoryStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var navigationSelection
 
     @MainActor
     public init(
@@ -97,13 +99,14 @@ public struct DashboardView: View {
                                     if navigation.selectedSection == section {
                                         Capsule()
                                             .fill(Color.primary.opacity(0.075))
+                                            .matchedGeometryEffect(id: "dashboard-selection", in: navigationSelection)
                                     }
                                 }
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(SnapLexPressButtonStyle())
                     }
                 }
-                .animation(.easeInOut(duration: 0.12), value: navigation.selectedSection)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: navigation.selectedSection)
 
                 Spacer(minLength: 4)
             }
@@ -410,6 +413,8 @@ private struct DashboardActionTile: View {
     let subtitle: String
     let icon: String
     let action: () -> Void
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
@@ -424,10 +429,12 @@ private struct DashboardActionTile: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(13)
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+            .background(Color.primary.opacity(isHovered ? 0.07 : 0.035), in: RoundedRectangle(cornerRadius: 12))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SnapLexPressButtonStyle())
+        .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
     }
 }
 
@@ -445,7 +452,7 @@ private struct DashboardPrimaryButton: View {
                 .foregroundStyle(.white)
                 .background(Color.accentColor, in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SnapLexPressButtonStyle())
     }
 }
 
@@ -503,7 +510,7 @@ private struct DashboardScreenshotTile: View {
             .contentShape(RoundedRectangle(cornerRadius: 12))
             .clipped()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SnapLexPressButtonStyle())
         .task(id: record.id) {
             image = await ScreenshotThumbnailLoader.load(for: record.fileURL)
         }

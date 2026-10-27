@@ -332,20 +332,6 @@ enum SelectionTriggerPolicy {
         return mouseDownProcessIdentifier == mouseUpProcessIdentifier
     }
 
-    static func shouldAllowDoubleCopy(focusedTarget: SelectionAXTargetKind) -> Bool {
-        focusedTarget == .nonEditable
-    }
-
-    /// A clipboard copy can advance the change count once, or twice when the
-    /// source app clears and then writes the pasteboard between polls. A larger
-    /// jump is ambiguous, so it starts a fresh candidate instead of triggering.
-    static func isPlausibleTextClipboardCopyChange(
-        changeCountDelta: Int,
-        pasteboardContainsString: Bool
-    ) -> Bool {
-        pasteboardContainsString && (1...2).contains(changeCountDelta)
-    }
-
     static func shouldAllowSyntheticCopy(
         focusedTarget: SelectionAXTargetKind,
         downTarget: SelectionAXTargetKind,
@@ -360,22 +346,6 @@ enum SelectionTriggerPolicy {
         // A stale focused web search field must not authorize synthetic Cmd+C
         // over another region. Both hit-tested endpoints must be proven safe.
         return downTarget == .nonEditable && upTarget == .nonEditable
-    }
-
-    static func shouldShowDoubleCopy(
-        focusedTarget: SelectionAXTargetKind,
-        isEnabled: Bool,
-        isSecondClipboardChangeWithinWindow: Bool,
-        clipboardSnapshotIsStable: Bool,
-        foregroundAppUnchanged: Bool,
-        isDuplicateSelection: Bool
-    ) -> Bool {
-        isEnabled
-            && isSecondClipboardChangeWithinWindow
-            && clipboardSnapshotIsStable
-            && foregroundAppUnchanged
-            && !isDuplicateSelection
-            && focusedTarget == .nonEditable
     }
 
     static func classifyAXRoleChain(
@@ -433,36 +403,5 @@ enum SelectionTriggerPolicy {
             && processIdentifier == lastProcessIdentifier
             && now >= lastTime
             && now - lastTime < window
-    }
-}
-
-struct DoubleCopyCandidateState: Equatable {
-    private(set) var timestamp: TimeInterval?
-    private(set) var processIdentifier: pid_t?
-
-    /// Returns true only when a second plausible copy is observed from the
-    /// same app inside the configured interval. A first/expired/cross-app copy
-    /// replaces the candidate and cannot trigger a popup.
-    mutating func observeCopy(
-        timestamp: TimeInterval,
-        processIdentifier: pid_t,
-        window: TimeInterval = 0.60
-    ) -> Bool {
-        if let previousTimestamp = self.timestamp,
-           self.processIdentifier == processIdentifier,
-           timestamp >= previousTimestamp,
-           timestamp - previousTimestamp <= window {
-            reset()
-            return true
-        }
-
-        self.timestamp = timestamp
-        self.processIdentifier = processIdentifier
-        return false
-    }
-
-    mutating func reset() {
-        timestamp = nil
-        processIdentifier = nil
     }
 }

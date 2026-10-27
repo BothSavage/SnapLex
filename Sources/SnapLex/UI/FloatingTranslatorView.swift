@@ -210,7 +210,6 @@ public struct FloatingTranslatorView: View {
                     helpText: "复制"
                 ) {
                     let textToCopy = vm.translatedOutput.isEmpty ? vm.systemDefinition : vm.translatedOutput
-                    SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(textToCopy, forType: .string)
                     copiedFeedback = true
@@ -491,7 +490,7 @@ private struct ToolbarIconButton: View {
                         )
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SnapLexPressButtonStyle())
         .help(L10n.string(helpText))
         .onHover { hovering in
             isHovered = hovering

@@ -4,6 +4,7 @@ import AppKit
 public enum TranslationTriggerSource: String, Codable {
     case mouseSelect = "鼠标划词"
     case selection = "快捷键划词"
+    // Retain the legacy value for decoding existing data; no trigger emits it.
     case doubleCopy = "双击⌘C"
     case screenshot = "截图OCR"
     case manual = "手动输入"
@@ -186,9 +187,6 @@ public final class AppSettings: ObservableObject {
     @Published public var enableMouseHoverBar: Bool {
         didSet { defaults.set(enableMouseHoverBar, forKey: "SnapLex.enableMouseHoverBar") }
     }
-    @Published public var enableDoubleCmdC: Bool {
-        didSet { defaults.set(enableDoubleCmdC, forKey: "SnapLex.enableDoubleCmdC") }
-    }
     @Published public var appearanceMode: SnapLexAppearanceMode {
         didSet {
             defaults.set(appearanceMode.rawValue, forKey: "SnapLex.appearanceMode")
@@ -246,11 +244,6 @@ public final class AppSettings: ObservableObject {
             self.enableMouseHoverBar = true
         } else {
             self.enableMouseHoverBar = defaults.bool(forKey: "SnapLex.enableMouseHoverBar")
-        }
-        if defaults.object(forKey: "SnapLex.enableDoubleCmdC") == nil {
-            self.enableDoubleCmdC = true
-        } else {
-            self.enableDoubleCmdC = defaults.bool(forKey: "SnapLex.enableDoubleCmdC")
         }
         self.appearanceMode = SnapLexAppearanceMode(
             rawValue: defaults.string(forKey: "SnapLex.appearanceMode") ?? "system"

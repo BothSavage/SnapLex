@@ -246,7 +246,6 @@ public final class ScrollingCaptureEngine: ObservableObject {
 
         guard let img = finalImg else { return }
         ScreenshotHistoryStore.shared.saveInBackground(img)
-        SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([img])
 

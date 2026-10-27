@@ -1145,7 +1145,6 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         viewModel.commitInlineTextIfNeeded()
         let img = viewModel.renderFlattenedImage()
         let pb = NSPasteboard.general
-        SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
         pb.clearContents()
         pb.writeObjects([img])
         viewModel.showHUD(L10n.string("已复制图像"))
@@ -2118,7 +2117,6 @@ private struct PinnedImageRootView: View {
                     .foregroundStyle(.blue)
                 }
                 Button(action: {
-                    SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(vm.ocrSidebarText, forType: .string)
                     vm.showHUD(L10n.string("已复制全部文字"))

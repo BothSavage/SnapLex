@@ -91,7 +91,7 @@ public final class ScreenshotHistoryStore: ObservableObject {
             let milliseconds = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
             logger.debug("screenshot history save completed success=\(saved != nil, privacy: .public) milliseconds=\(milliseconds, privacy: .public)")
             DispatchQueue.main.async {
-                self?.records = snapshot
+                if let self, self.records != snapshot { self.records = snapshot }
                 completion?(saved)
             }
         }
@@ -135,7 +135,9 @@ public final class ScreenshotHistoryStore: ObservableObject {
         ioQueue.async { [weak self] in
             autoreleasepool { operation(files) }
             let snapshot = files.records
-            DispatchQueue.main.async { self?.records = snapshot }
+            DispatchQueue.main.async {
+                if let self, self.records != snapshot { self.records = snapshot }
+            }
         }
     }
 }

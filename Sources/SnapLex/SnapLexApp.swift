@@ -275,7 +275,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupHotKeyCallbacks() {
         let mgr = SelectionAndHotKeyManager.shared
 
-        // Mouse drag selection or Double Cmd+C -> Show Pill Bar
+        // Mouse drag selection -> Show Pill Bar
         mgr.onShowSelectionPopup = { payload in
             if ProcessInfo.processInfo.environment["SNAPLEX_SELECTION_TRACE"] == "1" {
                 NSLog("SnapLex selection trace: app presenter received request=%@ trigger=%@ characters=%ld",

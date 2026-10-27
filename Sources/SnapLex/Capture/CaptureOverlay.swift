@@ -1752,7 +1752,6 @@ public final class CaptureCanvasView: NSView {
         case 8 where !flags.contains(.command): // 'C' -> Copy pixel color under cursor!
             let (r, g, b, _) = sampleRGB(at: mouseLocationInView)
             let code = colorFormat.format(r: r, g: g, b: b)
-            SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(code, forType: .string)
             showToast(L10n.format("🎨 已复制色值: %@", code))
@@ -2095,7 +2094,6 @@ public final class CaptureCanvasView: NSView {
                         return
                     }
                     let copyText = codes.map(\.payload).joined(separator: "\n")
-                    SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(copyText, forType: .string)
                     if codes.count == 1 {
@@ -2157,7 +2155,6 @@ public final class CaptureCanvasView: NSView {
 
     public func triggerCopyAction() {
         guard let (image, _) = renderCroppedAnnotatedImage() else { return }
-        SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([image])
         onFinish()

@@ -11,7 +11,7 @@ public struct SettingsView: View {
     @ObservedObject var settings = AppSettings.shared
     @ObservedObject private var shortcutRecorder = ShortcutRecorderController.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
-    @StateObject private var releaseUpdateChecker = GitHubReleaseUpdateService()
+    @ObservedObject private var releaseUpdateChecker = GitHubReleaseUpdateService.shared
     @ObservedObject private var updateInstaller = NativeUpdateInstaller.shared
     @Environment(\.colorScheme) private var colorScheme
     @State private var isPinned: Bool = WindowManager.shared.isSettingsPinned
@@ -160,14 +160,6 @@ public struct SettingsView: View {
                             DividerLine()
 
                             MonochromeToggleRow(
-                                title: L10n.string("双击 ⌘C 呼出划词控制栏"),
-                                subtitle: L10n.string("需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏"),
-                                isOn: $settings.enableDoubleCmdC
-                            )
-
-                            DividerLine()
-
-                            MonochromeToggleRow(
                                 title: L10n.string("登录时启动 SnapLex"),
                                 subtitle: L10n.string("登录 macOS 后自动启动 SnapLex"),
                                 isOn: Binding(
@@ -242,7 +234,7 @@ public struct SettingsView: View {
                         VStack(spacing: 0) {
                             MonochromeToggleRow(
                                 title: L10n.string("自动记录划词翻译"),
-                                subtitle: L10n.string("将鼠标划词、快捷键和双击复制触发的翻译加入记录"),
+                                subtitle: L10n.string("将鼠标划词和快捷键触发的翻译加入记录"),
                                 isOn: $settings.recordSelectionTranslations
                             )
                             DividerLine()
@@ -295,38 +287,22 @@ public struct SettingsView: View {
                                         updateStatus
                                     }
                                     Spacer(minLength: 8)
-                                    Button {
-                                        Task { await releaseUpdateChecker.checkForUpdates() }
-                                    } label: {
-                                        Label(
-                                            L10n.string(releaseUpdateChecker.state == .checking ? "检查中…" : "检查更新"),
-                                            systemImage: "arrow.clockwise"
-                                        )
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .disabled(releaseUpdateChecker.state == .checking || updateInstaller.isBusy)
+                                    updatePrimaryAction
                                 }
 
-                                if case let .updateAvailable(version, notes, releaseURL, downloadURL, hasUpdateFeed) = releaseUpdateChecker.state {
+                                if case let .updateAvailable(version, notes, _, downloadURL, hasUpdateFeed) = releaseUpdateChecker.state {
                                     VStack(alignment: .leading, spacing: 8) {
                                         Text(L10n.format("发现新版本 %@", version))
                                             .font(.system(size: 12, weight: .semibold))
                                         if !notes.isEmpty {
                                             ReleaseNotesSummary(notes: notes)
                                         }
-                                        if downloadURL != nil && hasUpdateFeed {
-                                            updateInstallControls(version: version)
-                                        } else {
-                                            if downloadURL != nil {
-                                                Text(L10n.string("此版本需要手动安装"))
-                                                    .font(.system(size: 11))
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            Link(destination: releaseURL) {
-                                                Label(L10n.string("查看 GitHub 发布页面"), systemImage: "arrow.up.right.square")
-                                            }
-                                            .font(.system(size: 11.5, weight: .medium))
+                                        if downloadURL == nil || !hasUpdateFeed {
+                                            Text(L10n.string("此版本需要手动安装"))
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(.secondary)
                                         }
+                                        updateInstallStatus
                                     }
                                     .padding(10)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -364,40 +340,78 @@ public struct SettingsView: View {
             isPinned = WindowManager.shared.isSettingsPinned
             PermissionCoordinator.shared.refresh()
             launchAtLogin.refreshStatus()
+            if (section == .all || section == .preferences) && !updateInstaller.isBusy {
+                Task { await releaseUpdateChecker.checkForUpdates() }
+            }
         }
     }
 
     @ViewBuilder
-    private func updateInstallControls(version: String) -> some View {
+    private var updatePrimaryAction: some View {
         switch updateInstaller.state {
-        case .idle, .failed:
-            if case let .failed(message) = updateInstaller.state {
-                Text(message)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            }
-            Button {
-                updateInstaller.download(version: version)
-            } label: {
-                Label(L10n.string("下载并安装"), systemImage: "arrow.down.circle")
-            }
-            .buttonStyle(.borderedProminent)
-        case .checking:
-            HStack {
-                ProgressView(L10n.string("正在准备更新…"))
+        case .checking, .downloading:
+            if updateInstaller.canCancel {
                 Button(L10n.string("取消")) { updateInstaller.cancel() }
+                    .buttonStyle(.bordered)
+            } else {
+                Button(L10n.string("正在准备更新…")) {}
+                    .buttonStyle(.bordered)
+                    .disabled(true)
             }
-        case let .downloading(progress):
-            HStack {
-                updateProgress(L10n.string("正在下载更新…"), progress: progress)
-                Button(L10n.string("取消")) { updateInstaller.cancel() }
-            }
-        case let .preparing(progress):
-            updateProgress(L10n.string("正在验证和准备安装…"), progress: progress)
+        case .preparing, .installing:
+            Button(L10n.string("正在安装更新…")) {}
+                .buttonStyle(.bordered)
+                .disabled(true)
         case .ready:
             Button(L10n.string("安装并重启")) { updateInstaller.installAndRestart() }
                 .buttonStyle(.borderedProminent)
+        case .idle, .failed:
+            if case let .updateAvailable(version, _, releaseURL, downloadURL, hasUpdateFeed) = releaseUpdateChecker.state {
+                if downloadURL != nil && hasUpdateFeed {
+                    Button {
+                        updateInstaller.download(version: version)
+                    } label: {
+                        Label(L10n.string("立即更新"), systemImage: "arrow.down.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                } else {
+                    Link(destination: releaseURL) {
+                        Label(L10n.string("查看 GitHub 发布页面"), systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else {
+                Button {
+                    Task { await releaseUpdateChecker.checkForUpdates() }
+                } label: {
+                    Label(
+                        L10n.string(releaseUpdateChecker.state == .checking ? "检查中…" : "检查更新"),
+                        systemImage: "arrow.clockwise"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .disabled(releaseUpdateChecker.state == .checking)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var updateInstallStatus: some View {
+        switch updateInstaller.state {
+        case .idle, .ready:
+            EmptyView()
+        case let .failed(message):
+            Text(message)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+        case .checking:
+            ProgressView(L10n.string("正在准备更新…"))
+        case let .downloading(progress):
+            updateProgress(L10n.string("正在下载更新…"), progress: progress)
+        case let .preparing(progress):
+            updateProgress(L10n.string("正在验证和准备安装…"), progress: progress)
         case .installing:
             ProgressView(L10n.string("正在安装更新…"))
         }
@@ -449,13 +463,24 @@ private struct ReleaseNotesSummary: View {
 
     private var lines: [String] {
         let all = notes.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let updateHeadings = ["本次更新", "更新内容", "更新日志", "what's changed", "changes"]
+        guard let start = all.firstIndex(where: { line in
+            guard line.hasPrefix("#") else { return false }
+            let title = line.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
+            return updateHeadings.contains(title)
+        }) else {
+            return all.filter { !$0.isEmpty }
+        }
+        let installationHeadings = ["安装提示", "安装说明", "installation note", "installation notes", "installation"]
         var result: [String] = []
-        for line in all {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { continue }
-            if trimmed.hasPrefix("#"), !result.isEmpty { break }
-            result.append(trimmed)
-            if result.count == 6 { break }
+        for line in all[start...] {
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("#") {
+                let title = line.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).lowercased()
+                if installationHeadings.contains(where: { title.hasPrefix($0) }) { break }
+            }
+            result.append(line)
         }
         return result
     }

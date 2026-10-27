@@ -1,6 +1,19 @@
 import SwiftUI
 import AppKit
 
+/// A short visual response without delaying the button's action or changing layout.
+struct SnapLexPressButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
+            .opacity(configuration.isPressed ? 0.84 : 1)
+            .contentShape(Rectangle())
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+}
+
 public enum SnapLexTheme {
     public static func resolvedColorScheme(for mode: SnapLexAppearanceMode, system: ColorScheme) -> ColorScheme {
         switch mode {

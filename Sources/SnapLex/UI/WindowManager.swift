@@ -86,7 +86,6 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             Task { @MainActor in
                 let text = await VisionOCRService.shared.recognizeText(in: image)
                 if !text.isEmpty {
-                    SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                     TranslatorViewModel.shared.preparePillSelection(

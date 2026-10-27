@@ -34,7 +34,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
 
     @Published public var isAXTrusted: Bool = AXIsProcessTrusted()
 
-    /// Fired when mouse drag-select or double Cmd+C triggers popup
+    /// Fired when mouse drag-select triggers the popup.
     public var onShowSelectionPopup: ((SelectedTextPayload) -> Void)?
     /// Fired when the explicit selection-translation shortcut opens the translation card
     public var onTriggerDirectTranslateCard: ((SelectedTextPayload) -> Void)?
@@ -74,11 +74,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     private var lastAutoPopupTime: TimeInterval = 0
     private var lastAutoPopupProcessIdentifier: pid_t?
 
-    // Double Cmd+C & AX trust monitor
-    private var pasteboardTimer: Timer?
-    private var lastChangeCount: Int = NSPasteboard.general.changeCount
-    private var doubleCopyCandidate = DoubleCopyCandidateState()
-    private var ignoreClipboardChangesUntil: TimeInterval = 0
+    private var permissionTimer: Timer?
 
     private init() {}
 
@@ -87,7 +83,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             hasStarted = true
             isAXTrusted = isAccessibilityTrusted(prompt: false)
             registerCarbonHotKeys()
-            startPasteboardAndTrustMonitor()
+            startPermissionMonitor()
         }
         ensureGlobalMouseMonitors(force: globalMouseMonitorRegistration.lastAttempt == nil)
     }
@@ -97,17 +93,6 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
-    }
-
-    /// Marks an app-originated copy so the double-Cmd+C feature cannot mistake
-    /// SnapLex's own non-activating panel for the user's frontmost app.
-    public func noteInternalClipboardWrite() {
-        ignoreClipboardChangesUntil = max(
-            ignoreClipboardChangesUntil,
-            ProcessInfo.processInfo.systemUptime + 1.0
-        )
-        doubleCopyCandidate.reset()
-        lastChangeCount = NSPasteboard.general.changeCount
     }
 
     // MARK: - Accessibility Check
@@ -330,8 +315,6 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                     sourceProcessIdentifier: processIdentifier,
                     snapshot: snapshot
                 ), self.isAccessibilityTrusted(prompt: false) else { return nil }
-                self.noteInternalClipboardWrite()
-                defer { self.noteInternalClipboardWrite() }
                 return await SelectionClipboardCapture.readSelection(
                     from: .general,
                     canContinue: {
@@ -418,17 +401,12 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     }
 
     /// Copies only after Accessibility confirmed both selection endpoints are
-    /// outside editable controls. Its single pasteboard change is ignored by
-    /// the double-copy detector.
+    /// outside editable controls.
     private func syntheticCopySelection(previousChangeCount: Int) async -> String? {
         let pb = NSPasteboard.general
-        ignoreClipboardChangesUntil = ProcessInfo.processInfo.systemUptime + 0.8
         simulateCmdC()
         try? await Task.sleep(nanoseconds: 85_000_000) // 85ms wait for pasteboard update
         let currentChangeCount = pb.changeCount
-        lastChangeCount = currentChangeCount
-        doubleCopyCandidate.reset()
-
         if currentChangeCount != previousChangeCount,
            let copied = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !copied.isEmpty {
@@ -509,121 +487,21 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         keyCUp?.post(tap: .cghidEventTap)
     }
 
-    // MARK: - Double Cmd+C & AX Trust Polling
+    // MARK: - Accessibility Permission Monitoring
 
-    private func startPasteboardAndTrustMonitor() {
-        guard pasteboardTimer == nil else { return }
-        lastChangeCount = NSPasteboard.general.changeCount
-        pasteboardTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+    private func startPermissionMonitor() {
+        guard permissionTimer == nil else { return }
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self = self else { return }
+                guard let self else { return }
                 let currentTrust = self.isAccessibilityTrusted(prompt: false)
                 if currentTrust != self.isAXTrusted {
                     self.isAXTrusted = currentTrust
                     self.refreshGlobalMouseMonitors(reason: currentTrust ? "accessibility-granted" : "accessibility-revoked")
                 }
                 self.ensureGlobalMouseMonitors()
-                await self.checkPasteboardChange()
             }
         }
-    }
-
-    private func checkPasteboardChange() async {
-        guard AppSettings.shared.enableDoubleCmdC else {
-            doubleCopyCandidate.reset()
-            return
-        }
-        let pb = NSPasteboard.general
-        let currentCount = pb.changeCount
-        guard currentCount != lastChangeCount else { return }
-        let changeCountDelta = currentCount - lastChangeCount
-        lastChangeCount = currentCount
-
-        // A clear-and-write copy can advance the count twice between polls.
-        // Accept that as one candidate transaction; a single copy still cannot
-        // open the pill because a second candidate and a safe AX focus are needed.
-        guard SelectionTriggerPolicy.isPlausibleTextClipboardCopyChange(
-            changeCountDelta: changeCountDelta,
-            pasteboardContainsString: pb.types?.contains(.string) == true
-        ) else {
-            doubleCopyCandidate.reset()
-            selectionLogger.debug("double copy candidate reset reason=ambiguous-or-nontext-clipboard-change delta=\(changeCountDelta, privacy: .public)")
-            return
-        }
-
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now >= ignoreClipboardChangesUntil else {
-            doubleCopyCandidate.reset()
-            return
-        }
-
-        guard let frontmost = NSWorkspace.shared.frontmostApplication,
-              frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
-            doubleCopyCandidate.reset()
-            return
-        }
-
-        let requestID = UUID().uuidString
-        let hadPendingCopy = doubleCopyCandidate.timestamp != nil
-        let isSecondCopy = doubleCopyCandidate.observeCopy(
-            timestamp: now,
-            processIdentifier: frontmost.processIdentifier
-        )
-        selectionLogger.debug("double copy observed request=\(requestID, privacy: .public) phase=\(isSecondCopy ? "second" : "first", privacy: .public) priorCandidate=\(hadPendingCopy, privacy: .public) changeCountDelta=\(changeCountDelta, privacy: .public) sourcePID=\(frontmost.processIdentifier, privacy: .public)")
-        guard isSecondCopy else {
-            return
-        }
-
-        let secondCopyChangeCount = currentCount
-        let focusedSnapshot = await accessibilityReader.inspectFocusedTarget(
-            processIdentifier: frontmost.processIdentifier
-        )
-        let focusedTarget = focusedSnapshot.target
-        selectionLogger.debug("double copy AX request=\(requestID, privacy: .public) milliseconds=\(focusedSnapshot.durationMilliseconds, privacy: .public) queueWait=\(focusedSnapshot.queueWaitMilliseconds, privacy: .public) worker=\(focusedSnapshot.workerDurationMilliseconds, privacy: .public) calls=\(focusedSnapshot.accessibilityCallCount, privacy: .public) error=\(focusedSnapshot.lastAccessibilityError ?? 0, privacy: .public) timedOut=\(focusedSnapshot.timedOut, privacy: .public) target=\(String(describing: focusedTarget), privacy: .public)")
-        let foregroundUnchanged = NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmost.processIdentifier
-        let clipboardSnapshotIsStable = pb.changeCount == secondCopyChangeCount
-        guard SelectionTriggerPolicy.shouldShowDoubleCopy(
-            focusedTarget: focusedTarget,
-            isEnabled: AppSettings.shared.enableDoubleCmdC,
-            isSecondClipboardChangeWithinWindow: true,
-            clipboardSnapshotIsStable: clipboardSnapshotIsStable,
-            foregroundAppUnchanged: foregroundUnchanged,
-            isDuplicateSelection: false
-        ) else {
-            selectionLogger.info("double copy suppressed request=\(requestID, privacy: .public) reason=editable-unknown-duplicate-or-app-changed target=\(String(describing: focusedTarget), privacy: .public)")
-            return
-        }
-
-        // Read clipboard content only after two fast changes from the same
-        // external app and after AX confirms focus is not an editable control.
-        guard pb.changeCount == secondCopyChangeCount,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmost.processIdentifier,
-              let text = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              pb.changeCount == secondCopyChangeCount,
-              SelectionTriggerPolicy.isValidSelectedText(text) else {
-            selectionLogger.debug("double copy finished request=\(requestID, privacy: .public) result=empty-or-app-changed")
-            return
-        }
-
-        let finalNow = ProcessInfo.processInfo.systemUptime
-        guard !SelectionTriggerPolicy.isDuplicate(
-            text: text,
-            processIdentifier: frontmost.processIdentifier,
-            lastText: lastAutoPopupText,
-            lastProcessIdentifier: lastAutoPopupProcessIdentifier,
-            now: finalNow,
-            lastTime: lastAutoPopupTime
-        ) else {
-            selectionLogger.debug("double copy suppressed request=\(requestID, privacy: .public) reason=duplicate")
-            return
-        }
-
-        lastAutoPopupText = text
-        lastAutoPopupTime = finalNow
-        lastAutoPopupProcessIdentifier = frontmost.processIdentifier
-        let appName = frontmost.localizedName ?? "macOS"
-        selectionLogger.info("double copy accepted request=\(requestID, privacy: .public) characters=\(text.count, privacy: .public) sourcePID=\(frontmost.processIdentifier, privacy: .public)")
-        onShowSelectionPopup?(SelectedTextPayload(text: text, sourceApp: appName, trigger: .doubleCopy))
     }
 
     // MARK: - Carbon Global HotKeys

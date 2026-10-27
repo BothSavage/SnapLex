@@ -202,7 +202,6 @@ public struct SelectionPillBarView: View {
                 icon: copiedFeedback ? "checkmark" : "doc.on.doc",
                 title: L10n.string(copiedFeedback ? "已复制" : "复制")
             ) {
-                SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(vm.inputText, forType: .string)
                 copiedFeedback = true
@@ -266,7 +265,7 @@ private struct PillBarButton: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SnapLexPressButtonStyle())
         .onHover { hovering in
             isHovered = hovering
         }

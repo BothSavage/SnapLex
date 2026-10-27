@@ -81,42 +81,6 @@ final class SelectionScenarioMatrixTests: XCTestCase {
         XCTAssertEqual(scenarios, 216)
     }
 
-    func testDoubleCopyGateAcross96Scenarios() {
-        var scenarios = 0
-        for focus in targets {
-            for enabled in [false, true] {
-                for withinWindow in [false, true] {
-                    for foregroundUnchanged in [false, true] {
-                        for isDuplicate in [false, true] {
-                            for clipboardStable in [false, true] {
-                                scenarios += 1
-                                let expected = focus == .nonEditable
-                                    && enabled
-                                    && withinWindow
-                                    && clipboardStable
-                                    && foregroundUnchanged
-                                    && !isDuplicate
-                                XCTAssertEqual(
-                                    SelectionTriggerPolicy.shouldShowDoubleCopy(
-                                        focusedTarget: focus,
-                                        isEnabled: enabled,
-                                        isSecondClipboardChangeWithinWindow: withinWindow,
-                                        clipboardSnapshotIsStable: clipboardStable,
-                                        foregroundAppUnchanged: foregroundUnchanged,
-                                        isDuplicateSelection: isDuplicate
-                                    ),
-                                    expected,
-                                    "scenario=\(scenarios) focus=\(focus) enabled=\(enabled) within=\(withinWindow) stable=\(clipboardStable) foreground=\(foregroundUnchanged) duplicate=\(isDuplicate)"
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        XCTAssertEqual(scenarios, 96)
-    }
-
     func testAXSnapshotGateAcross18TimeoutAndProcessScenarios() {
         let sourcePID: pid_t = 100
         let processTargets: [pid_t?] = [nil, sourcePID, sourcePID + 1]
@@ -196,46 +160,6 @@ final class SelectionScenarioMatrixTests: XCTestCase {
             }
         }
         XCTAssertEqual(scenarios, 64)
-    }
-
-    func testDoubleCopyCandidateStateAcrossSourceAndTimingScenarios() {
-        var scenarios = 0
-        let offsets: [TimeInterval] = [-0.01, 0, 0.599, 0.60, 0.601, 1]
-        for firstPID: pid_t in [10, 20] {
-            for secondPID: pid_t in [10, 20] {
-                for offset in offsets {
-                    scenarios += 1
-                    var state = DoubleCopyCandidateState()
-                    XCTAssertFalse(state.observeCopy(timestamp: 5, processIdentifier: firstPID))
-                    let expected = firstPID == secondPID && offset >= 0 && offset <= 0.60
-                    XCTAssertEqual(
-                        state.observeCopy(timestamp: 5 + offset, processIdentifier: secondPID),
-                        expected,
-                        "scenario=\(scenarios) firstPID=\(firstPID) secondPID=\(secondPID) offset=\(offset)"
-                    )
-                    XCTAssertEqual(state.timestamp == nil, expected, "scenario=\(scenarios) candidate reset state")
-                }
-            }
-        }
-        XCTAssertEqual(scenarios, 24)
-    }
-
-    func testClipboardTransactionMatrixAcrossDeltaAndPayloadKind() {
-        var scenarios = 0
-        for delta in [-1, 0, 1, 2, 3, 4] {
-            for containsString in [false, true] {
-                scenarios += 1
-                XCTAssertEqual(
-                    SelectionTriggerPolicy.isPlausibleTextClipboardCopyChange(
-                        changeCountDelta: delta,
-                        pasteboardContainsString: containsString
-                    ),
-                    containsString && (1...2).contains(delta),
-                    "scenario=\(scenarios) delta=\(delta) containsString=\(containsString)"
-                )
-            }
-        }
-        XCTAssertEqual(scenarios, 12)
     }
 
     func testMouseGestureAppIdentityMatrixAcrossDownAndUpTargets() {

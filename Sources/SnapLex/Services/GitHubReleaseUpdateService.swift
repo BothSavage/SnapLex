@@ -120,6 +120,8 @@ struct GitHubReleaseVersion: Equatable, Comparable {
 
 @MainActor
 public final class GitHubReleaseUpdateService: ObservableObject {
+    static let shared = GitHubReleaseUpdateService()
+
     public enum State: Equatable {
         case idle
         case checking
@@ -203,10 +205,11 @@ public final class GitHubReleaseUpdateService: ObservableObject {
     public var currentVersion: String {
         currentVersionOverride
             ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-            ?? "1.0.9"
+            ?? "1.0.10"
     }
 
     public func checkForUpdates() async {
+        guard state != .checking else { return }
         guard let url = URL(string: "https://api.github.com/repos/\(owner)/\(repository)/releases/latest") else {
             state = .failed(L10n.string("更新服务地址无效"))
             return

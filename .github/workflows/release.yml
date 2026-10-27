@@ -142,5 +142,14 @@ jobs:
               fi
             done
           else
-            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$CHECKSUM_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --notes "$(cat docs/release-installation.md)" --generate-notes
+            NOTES_PATH="$RUNNER_TEMP/release-notes.md"
+            VERSION_NOTES="docs/releases/${RELEASE_VERSION}.md"
+            if [[ -f "$VERSION_NOTES" ]]; then
+              cat "$VERSION_NOTES" > "$NOTES_PATH"
+              printf '\n\n' >> "$NOTES_PATH"
+            else
+              : > "$NOTES_PATH"
+            fi
+            cat docs/release-installation.md >> "$NOTES_PATH"
+            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$CHECKSUM_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --notes-file "$NOTES_PATH" --generate-notes
           fi

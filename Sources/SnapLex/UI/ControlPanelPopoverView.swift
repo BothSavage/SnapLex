@@ -91,7 +91,7 @@ public struct ControlPanelPopoverView: View {
                         .background(Color.accentColor, in: Capsule())
                         .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SnapLexPressButtonStyle())
                 .help(L10n.string("打开控制台"))
             }
             .padding(.horizontal, 16)
@@ -256,6 +256,8 @@ private struct ControlPanelActionButton: View {
     let title: String
     let icon: String
     let action: () -> Void
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
@@ -266,10 +268,12 @@ private struct ControlPanelActionButton: View {
             .frame(maxWidth: .infinity)
             .frame(height: 58)
             .foregroundStyle(Color.primary.opacity(0.86))
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+            .background(Color.primary.opacity(isHovered ? 0.09 : 0.045), in: RoundedRectangle(cornerRadius: 10))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SnapLexPressButtonStyle())
+        .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
     }
 }
 
@@ -307,7 +311,7 @@ private struct ControlPanelScreenshotRow: View {
             .padding(.vertical, 7)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SnapLexPressButtonStyle())
         .task(id: record.id) {
             image = await ScreenshotThumbnailLoader.load(for: record.fileURL, maxPixelSize: 480)
         }

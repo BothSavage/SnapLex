@@ -25,6 +25,8 @@ final class NativeUpdateInstaller: NSObject, ObservableObject, SPUUserDriver {
     private var receivedBytes: UInt64 = 0
     private var lastProgressPercent = -1
 
+    var canCancel: Bool { cancelDownload != nil }
+
     var isBusy: Bool {
         switch state {
         case .idle, .failed: return false

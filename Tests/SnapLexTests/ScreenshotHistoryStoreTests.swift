@@ -1,9 +1,28 @@
 import AppKit
+import Combine
 import XCTest
 @testable import SnapLex
 
 @MainActor
 final class ScreenshotHistoryStoreTests: XCTestCase {
+    func testReloadDoesNotPublishAnUnchangedHistory() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ScreenshotHistoryStore(directoryURL: directory, retentionLimit: { 10 })
+        await store.waitForPendingOperations()
+        var publications = 0
+        let subscription = store.$records.dropFirst().sink { _ in publications += 1 }
+
+        store.reload()
+        await store.waitForPendingOperations()
+        XCTAssertEqual(publications, 0)
+
+        let saved = await store.save(makeImage(width: 12, height: 8))
+        XCTAssertNotNil(saved)
+        XCTAssertEqual(publications, 1)
+        withExtendedLifetime(subscription) {}
+    }
+
     func testSavePersistsPNGDimensionsAndDeleteRemovesFile() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

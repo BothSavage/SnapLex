@@ -82,31 +82,6 @@ final class SelectionTriggerPolicyTests: XCTestCase {
         ))
     }
 
-    func testDoubleCopyOnlyTriggersWhenFocusedControlIsKnownToBeNonEditable() {
-        XCTAssertTrue(SelectionTriggerPolicy.shouldAllowDoubleCopy(focusedTarget: .nonEditable))
-        XCTAssertFalse(SelectionTriggerPolicy.shouldAllowDoubleCopy(focusedTarget: .editable))
-        XCTAssertFalse(SelectionTriggerPolicy.shouldAllowDoubleCopy(focusedTarget: .unavailable))
-    }
-
-    func testClipboardCopyCandidateAcceptsSingleAndClearThenWriteTransactions() {
-        for delta in 1...2 {
-            XCTAssertTrue(SelectionTriggerPolicy.isPlausibleTextClipboardCopyChange(
-                changeCountDelta: delta,
-                pasteboardContainsString: true
-            ))
-            XCTAssertFalse(SelectionTriggerPolicy.isPlausibleTextClipboardCopyChange(
-                changeCountDelta: delta,
-                pasteboardContainsString: false
-            ))
-        }
-        for delta in [Int.min, -1, 0, 3, 4, Int.max] {
-            XCTAssertFalse(SelectionTriggerPolicy.isPlausibleTextClipboardCopyChange(
-                changeCountDelta: delta,
-                pasteboardContainsString: true
-            ))
-        }
-    }
-
     func testSyntheticCopyRequiresKnownNonEditableSelectionContext() {
         XCTAssertTrue(SelectionTriggerPolicy.shouldAllowSyntheticCopy(
             focusedTarget: .nonEditable,
