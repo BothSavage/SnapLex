@@ -51,7 +51,7 @@ if [[ ! -d "$APP_PATH" ]]; then
     echo "The update image must contain SnapLex.app." >&2
     exit 1
 fi
-codesign --verify --deep --strict "$APP_PATH"
+"$ROOT_DIR/scripts/verify_app_bundle.sh" "$APP_PATH"
 SIGNATURE_INFO="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
 DESIGNATED_REQUIREMENT="$(codesign -d -r- "$APP_PATH" 2>&1)"
 REQUIREMENT_UPPER="$(printf '%s' "$DESIGNATED_REQUIREMENT" | tr '[:lower:]' '[:upper:]')"

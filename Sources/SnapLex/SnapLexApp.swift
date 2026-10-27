@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import Darwin
 
 @main
 @MainActor
@@ -16,6 +17,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let activationNotification = Notification.Name("io.github.snaplex.activate-existing-instance")
 
     public static func main() {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--verify-installation"]) {
+            let translation = L10n.localizedString("翻译", language: "en")
+            guard L10n.hasLoadedCatalog, translation == "Translate" else {
+                fputs("SnapLex localization resources are missing or invalid.\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+            print("SnapLex installation verification passed.")
+            return
+        }
+
         let delegate = AppDelegate()
         // Register before electing the owner so simultaneous launches cannot
         // send their activation request before the owner is listening.

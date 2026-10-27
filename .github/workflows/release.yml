@@ -103,6 +103,15 @@ jobs:
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
           echo "CHECKSUM_PATH=$CHECKSUM_PATH" >> "$GITHUB_ENV"
 
+      - name: Verify packaged app startup
+        shell: bash
+        run: |
+          MOUNT_DIR="$RUNNER_TEMP/snaplex-release-mount"
+          mkdir -p "$MOUNT_DIR"
+          hdiutil attach -readonly -nobrowse -noverify -quiet -mountpoint "$MOUNT_DIR" "$DMG_PATH"
+          trap 'hdiutil detach "$MOUNT_DIR" -quiet || true' EXIT
+          ./scripts/verify_app_bundle.sh "$MOUNT_DIR/SnapLex.app"
+
       - name: Generate signed update feed
         env:
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}

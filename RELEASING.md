@@ -31,7 +31,7 @@ Sparkle 私钥当前存放在本机钥匙串，账号名为 `io.github.snaplex.u
 
 1. 完成上述签名身份配置，并确认 `SPARKLE_EDDSA_PRIVATE_KEY` 已添加。
 2. 将代码推送到 `main`，确认 `macOS CI` 检查通过。
-3. 创建并推送三段式版本 tag，例如 `v1.0.6`。
+3. 创建并推送三段式版本 tag，例如 `v1.0.7`。
 4. GitHub Actions 使用固定自签名证书签署应用，构建未经公证的 DMG，生成经 Sparkle 签名的 `appcast.xml`，再创建正式 Release。
 5. 用户按 [安装提示](docs/release-installation.md) 首次打开应用；之后可通过应用内更新安装新版。
 
@@ -53,6 +53,6 @@ SNAPLEX_EXPECTED_SIGNING_CERT_SHA1="$SIGNING_SHA1" \
 ./scripts/build_app.sh
 ```
 
-将生成的 `dist/SnapLex.app` 放入名为 `SnapLex-版本号-macOS-架构-unnotarized.dmg` 的 DMG，再运行 `scripts/generate_appcast.sh 版本号 DMG路径 更新说明.md` 生成清单。脚本会拒绝 ad-hoc 签名，并可通过 `SNAPLEX_EXPECTED_SIGNING_CERT_SHA1` 验证使用的是固定证书。将 DMG 和 `appcast.xml` 一起上传到对应 Release。
+将生成的 `dist/SnapLex.app` 放入名为 `SnapLex-版本号-macOS-架构-unnotarized.dmg` 的 DMG，再运行 `scripts/generate_appcast.sh 版本号 DMG路径 更新说明.md` 生成清单。脚本会在挂载的 DMG 中运行无界面启动与资源检查，拒绝 ad-hoc 签名，并可通过 `SNAPLEX_EXPECTED_SIGNING_CERT_SHA1` 验证使用的是固定证书。将 DMG 和 `appcast.xml` 一起上传到对应 Release。
 
 如果替换证书，必须同时更新 GitHub Actions Variable `SNAPLEX_SIGNING_CERT_SHA1`，并预期用户需要重新授予 macOS 权限。Apple Development 证书可用于个人本机开发，但不能代替此发行身份；发布签名也不能改回 ad-hoc。

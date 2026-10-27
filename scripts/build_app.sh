@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-APP_VERSION="${SNAPLEX_VERSION:-1.0.6}"
+APP_VERSION="${SNAPLEX_VERSION:-1.0.7}"
 APP_BUILD_NUMBER="${SNAPLEX_BUILD_NUMBER:-$APP_VERSION}"
 
 echo "==> [1/3] Compiling SnapLex (arm64 native release)..."
@@ -36,12 +36,14 @@ cp "$ICON_SOURCE" "$ICONSET_DIR/icon_512x512@2x.png"
 iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/AppIcon.icns"
 rm -rf "$ICON_TEMP_ROOT"
 
-# SwiftPM stores processed resources (including the user-editable i18n catalog)
-# in a sibling bundle. Keep it inside the app bundle so Bundle.module can find it.
+# SwiftPM stores processed resources in a sibling bundle. The app resolves this
+# bundle from Contents/Resources and can start without a build-machine path.
 RESOURCE_BUNDLE=".build/release/SnapLex_SnapLex.bundle"
-if [ -d "$RESOURCE_BUNDLE" ]; then
-    cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/"
+if [ ! -f "$RESOURCE_BUNDLE/i18n.json" ]; then
+    echo "Required SwiftPM localization resource bundle is missing: $RESOURCE_BUNDLE" >&2
+    exit 1
 fi
+ditto "$RESOURCE_BUNDLE" "$RESOURCES_DIR/SnapLex_SnapLex.bundle"
 
 SPARKLE_FRAMEWORK="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 mkdir -p "$CONTENTS_DIR/Frameworks"
@@ -161,9 +163,10 @@ if [ "${SNAPLEX_REQUIRE_STABLE_SIGNING:-0}" = "1" ]; then
         echo "Observed designated requirement: $DESIGNATED_REQUIREMENT" >&2
         exit 1
     fi
-    codesign --verify --deep --strict "$APP_DIR"
     echo "   Stable signing certificate: $EXPECTED_CERT_SHA1"
 fi
+
+"$ROOT_DIR/scripts/verify_app_bundle.sh" "$APP_DIR"
 
 echo "✅ Done! App bundle created at: $APP_DIR"
 echo "   Binary size: $(du -sh "$MACOS_DIR/SnapLex" | cut -f1)"
