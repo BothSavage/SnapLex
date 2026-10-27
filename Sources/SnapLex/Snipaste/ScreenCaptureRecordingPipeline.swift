@@ -30,6 +30,7 @@ final class ScreenCaptureRecordingPipeline: NSObject, SCStreamOutput, SCStreamDe
     private var microphoneInput: AVAssetWriterInput?
     private var writerSessionStart: CMTime?
     private var writerStarted = false
+    private var acceptsSamples = true
     private var paused = false
     private var pauseStartedUptime: TimeInterval?
     private var accumulatedPausedTime: TimeInterval = 0
@@ -150,7 +151,9 @@ final class ScreenCaptureRecordingPipeline: NSObject, SCStreamOutput, SCStreamDe
 
         let result: Result<Void, Error> = await withCheckedContinuation { continuation in
             outputQueue.async { [self] in
-                guard let writer, writerStarted else {
+                acceptsSamples = false
+                guard let writer, writerStarted, writer.status == .writing else {
+                    writer?.cancelWriting()
                     continuation.resume(returning: .failure(ScreenCaptureRecordingError.noFrames))
                     return
                 }
@@ -176,6 +179,7 @@ final class ScreenCaptureRecordingPipeline: NSObject, SCStreamOutput, SCStreamDe
         }
         await withCheckedContinuation { continuation in
             outputQueue.async { [self] in
+                acceptsSamples = false
                 writer?.cancelWriting()
                 writer = nil
                 continuation.resume()
@@ -184,7 +188,7 @@ final class ScreenCaptureRecordingPipeline: NSObject, SCStreamOutput, SCStreamDe
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
-        guard sampleBuffer.isValid, !paused else { return }
+        guard acceptsSamples, sampleBuffer.isValid, !paused else { return }
 
         switch outputType {
         case .screen:

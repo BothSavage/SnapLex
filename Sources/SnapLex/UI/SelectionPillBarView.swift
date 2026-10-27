@@ -84,7 +84,6 @@ public struct SnapLexBrandLogoView: View {
         .frame(width: size, height: size)
     }
 }
-
 public enum SnapLexBrandLogo {
     @MainActor
     public static func makeMenuBarImage() -> NSImage {
@@ -190,7 +189,7 @@ public struct SelectionPillBarView: View {
                 .frame(width: 1, height: 15)
                 .padding(.horizontal, 2)
 
-            // 1. 翻译 (WeChat-style [文][A] icon)
+            // 1. 翻译 (A ↔ 文)
             PillBarButton(
                 icon: "wechat:translate",
                 title: L10n.string("翻译")
@@ -203,6 +202,7 @@ public struct SelectionPillBarView: View {
                 icon: copiedFeedback ? "checkmark" : "doc.on.doc",
                 title: L10n.string(copiedFeedback ? "已复制" : "复制")
             ) {
+                SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(vm.inputText, forType: .string)
                 copiedFeedback = true
@@ -247,7 +247,7 @@ private struct PillBarButton: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 if icon == "wechat:translate" {
-                    WeChatTranslateTinyIcon()
+                    SnapLexTranslationIcon(size: 16)
                         .foregroundStyle(SnapLexTheme.toolbarForeground(for: colorScheme).opacity(isHovered ? 1.0 : 0.84))
                 } else {
                     Image(systemName: icon)
@@ -270,35 +270,5 @@ private struct PillBarButton: View {
         .onHover { hovering in
             isHovered = hovering
         }
-    }
-}
-
-private struct WeChatTranslateTinyIcon: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 2.2, style: .continuous)
-                .stroke(lineWidth: 1.15)
-                .frame(width: 10.5, height: 10.5)
-                .offset(x: -2.2, y: -2.2)
-            Text("文")
-                .font(.system(size: 6.8, weight: .bold))
-                .offset(x: -2.2, y: -2.2)
-
-            RoundedRectangle(cornerRadius: 2.0, style: .continuous)
-                .fill(SnapLexTheme.toolbarForeground(for: colorScheme))
-                .frame(width: 9.0, height: 9.0)
-                .offset(x: 2.6, y: 2.6)
-            RoundedRectangle(cornerRadius: 2.0, style: .continuous)
-                .stroke(lineWidth: 1.05)
-                .frame(width: 9.0, height: 9.0)
-                .offset(x: 2.6, y: 2.6)
-            Text("A")
-                .font(.system(size: 6.2, weight: .bold, design: .rounded))
-                .foregroundStyle(SnapLexTheme.toolbarBackground(for: colorScheme))
-                .offset(x: 2.6, y: 2.6)
-        }
-        .frame(width: 15, height: 15)
     }
 }

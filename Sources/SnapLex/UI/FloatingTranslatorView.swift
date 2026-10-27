@@ -215,6 +215,7 @@ public struct FloatingTranslatorView: View {
                     helpText: "复制"
                 ) {
                     let textToCopy = vm.translatedOutput.isEmpty ? vm.systemDefinition : vm.translatedOutput
+                    SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(textToCopy, forType: .string)
                     copiedFeedback = true
@@ -224,9 +225,12 @@ public struct FloatingTranslatorView: View {
                 }
 
                 ToolbarTranslationEngineMenu(settings: settings) { engine in
-                    guard settings.translationEngine != engine else { return }
-                    settings.translationEngine = engine
-                    vm.rerunCurrentInput()
+                    TranslationEngineSelectionAction.select(
+                        engine,
+                        currentEngine: settings.translationEngine,
+                        updateSetting: { settings.translationEngine = engine },
+                        rerunCurrentInput: { vm.rerunCurrentInput() }
+                    )
                 }
 
                 ToolbarIconButton(

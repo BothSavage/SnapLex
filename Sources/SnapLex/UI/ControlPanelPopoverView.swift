@@ -13,6 +13,16 @@ public struct ControlPanelPopoverView: View {
     @ObservedObject private var screenshots = ScreenshotHistoryStore.shared
     @Environment(\.colorScheme) private var colorScheme
 
+    private var actionHandlers: ControlPanelActionHandlers {
+        ControlPanelActionHandlers(
+            onScreenshot: onScreenshot,
+            onRecord: onRecord,
+            onPinClipboard: onPinClipboard,
+            onOpenDashboard: onOpenDashboard,
+            onQuit: onQuit
+        )
+    }
+
     private var lastDayEntries: [TranslationHistoryEntry] {
         let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
         return translations.entries.filter { $0.createdAt >= cutoff }
@@ -67,7 +77,7 @@ public struct ControlPanelPopoverView: View {
                 }
                 Spacer()
                 Button {
-                    onOpenDashboard(.home)
+                    actionHandlers.perform(.openDashboard(.home))
                 } label: {
                     Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 14, weight: .medium))
@@ -82,26 +92,41 @@ public struct ControlPanelPopoverView: View {
 
             Divider()
 
+            // Keep the primary capture actions anchored in the popover. The
+            // history below can scroll, but these controls should remain
+            // visible whenever the menu-bar panel is open.
+            VStack(alignment: .leading, spacing: 9) {
+                Text(L10n.string("常用截图操作"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    ControlPanelActionButton(title: L10n.string("截图"), icon: "viewfinder") {
+                        actionHandlers.perform(.screenshot)
+                    }
+                    ControlPanelActionButton(title: L10n.string("录屏"), icon: "record.circle") {
+                        actionHandlers.perform(.recording)
+                    }
+                    ControlPanelActionButton(title: L10n.string("贴图"), icon: "pin") {
+                        actionHandlers.perform(.pinClipboard)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 9) {
-                        Text(L10n.string("常用截图操作"))
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 8) {
-                            ControlPanelActionButton(title: L10n.string("截图"), icon: "viewfinder", action: onScreenshot)
-                            ControlPanelActionButton(title: L10n.string("录屏"), icon: "record.circle", action: onRecord)
-                            ControlPanelActionButton(title: L10n.string("贴图"), icon: "pin", action: onPinClipboard)
-                        }
-                    }
-
                     VStack(alignment: .leading, spacing: 9) {
                         HStack {
                             Text(L10n.string("最近截图"))
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Button(L10n.string("查看全部")) { onOpenDashboard(.screenshots) }
+                            Button(L10n.string("查看全部")) {
+                                actionHandlers.perform(.openDashboard(.screenshots))
+                            }
                                 .font(.system(size: 10.5, weight: .medium))
                                 .buttonStyle(.plain)
                                 .foregroundStyle(Color.accentColor)
@@ -175,7 +200,7 @@ public struct ControlPanelPopoverView: View {
                         }
 
                         Button {
-                            onOpenDashboard(.translations)
+                            actionHandlers.perform(.openDashboard(.translations))
                         } label: {
                             HStack {
                                 Text(L10n.string("查看翻译记录"))
@@ -196,7 +221,9 @@ public struct ControlPanelPopoverView: View {
             Divider()
 
             HStack(spacing: 10) {
-                Button(action: onQuit) {
+                Button {
+                    actionHandlers.perform(.quit)
+                } label: {
                     Image(systemName: "power")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -207,7 +234,7 @@ public struct ControlPanelPopoverView: View {
                 Spacer()
 
                 Button {
-                    onOpenDashboard(.home)
+                    actionHandlers.perform(.openDashboard(.home))
                 } label: {
                     Label(L10n.string("打开控制台"), systemImage: "rectangle.inset.filled.and.person.filled")
                         .font(.system(size: 12, weight: .semibold))
@@ -290,6 +317,8 @@ private struct ControlPanelScreenshotRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .task(id: record.id) { image = NSImage(contentsOf: record.fileURL) }
+        .task(id: record.id) {
+            image = await ScreenshotThumbnailLoader.load(for: record.fileURL, maxPixelSize: 480)
+        }
     }
 }

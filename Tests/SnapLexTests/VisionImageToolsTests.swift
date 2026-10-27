@@ -6,6 +6,27 @@ import XCTest
 
 @MainActor
 final class VisionImageToolsTests: XCTestCase {
+    func testBothOCRPathsRecognizeTextAndCancelledRecognitionReturnsEmpty() async throws {
+        let image = NSImage(size: NSSize(width: 640, height: 140))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 640, height: 140).fill()
+        ("SNAPLEX STABILITY" as NSString).draw(
+            at: NSPoint(x: 24, y: 42),
+            withAttributes: [.font: NSFont.systemFont(ofSize: 44), .foregroundColor: NSColor.black]
+        )
+        image.unlockFocus()
+
+        let text = await VisionOCRService.shared.recognizeText(in: image)
+        XCTAssertTrue(text.uppercased().contains("SNAPLEX"), text)
+        let blocks = await InPlaceOCRService.shared.recognizeBlocks(in: image)
+        XCTAssertTrue(blocks.contains { $0.originalText.uppercased().contains("SNAPLEX") })
+        let cancelled = Task { @MainActor in await VisionOCRService.shared.recognizeText(in: image) }
+        cancelled.cancel()
+        let result = await cancelled.value
+        XCTAssertTrue(result.isEmpty)
+    }
+
     func testBarcodeScannerReadsGeneratedQRCode() async throws {
         let payload = "https://example.com/snaplex-test"
         let qrCode = CIFilter.qrCodeGenerator()

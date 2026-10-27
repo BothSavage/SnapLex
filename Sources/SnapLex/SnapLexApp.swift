@@ -8,15 +8,64 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var controlPopover: NSPopover?
     private var languageObserver: AnyCancellable?
+    private var appearanceObserver: AnyCancellable?
     private var localShortcutMonitor: Any?
     private var explicitQuitRequested = false
+    private var instanceLock: SingleInstanceLock?
+    private var activationObserver: NSObjectProtocol?
+    private static let activationNotification = Notification.Name("io.github.snaplex.activate-existing-instance")
 
     public static func main() {
-        let app = NSApplication.shared
         let delegate = AppDelegate()
+        // Register before electing the owner so simultaneous launches cannot
+        // send their activation request before the owner is listening.
+        delegate.activationObserver = DistributedNotificationCenter.default().addObserver(
+            forName: activationNotification, object: nil, queue: .main
+        ) { [weak delegate] _ in
+            Task { @MainActor in
+                guard delegate?.instanceLock != nil else { return }
+                WindowManager.shared.showDashboard()
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+        do {
+            switch try SingleInstanceLock.acquire(at: SingleInstanceLock.applicationLockURL) {
+            case .acquired(let lock):
+                delegate.instanceLock = lock
+            case .alreadyRunning(let owner):
+                if let observer = delegate.activationObserver {
+                    DistributedNotificationCenter.default().removeObserver(observer)
+                }
+                DistributedNotificationCenter.default().postNotificationName(
+                    activationNotification, object: nil, userInfo: nil, deliverImmediately: true
+                )
+                if let owner {
+                    NSRunningApplication(processIdentifier: owner)?.activate(options: [.activateAllWindows])
+                }
+                return
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = L10n.string("SnapLex 无法启动")
+            alert.informativeText = L10n.string("无法取得应用运行锁，请检查用户目录的访问权限后重试。")
+            alert.runModal()
+            return
+        }
+        let app = NSApplication.shared
         app.delegate = delegate
         app.setActivationPolicy(.regular)
         app.run()
+        withExtendedLifetime(delegate) {}
+    }
+
+    public func applicationWillTerminate(_ notification: Notification) {
+        if let statusItem {
+            NSStatusBar.system.removeStatusItem(statusItem)
+            self.statusItem = nil
+        }
+        if let activationObserver {
+            DistributedNotificationCenter.default().removeObserver(activationObserver)
+        }
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
@@ -29,6 +78,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             .dropFirst()
             .sink { [weak self] _ in
                 Task { @MainActor in self?.setupStatusBarMenu() }
+            }
+        appearanceObserver = AppSettings.shared.$appearanceMode
+            .dropFirst()
+            .sink { [weak self] mode in
+                Task { @MainActor in
+                    self?.controlPopover?.appearance = SnapLexTheme.appKitAppearance(for: mode)
+                }
             }
         setupHotKeyCallbacks()
         setupLocalShortcutMonitor()
@@ -84,6 +140,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             let popover = NSPopover()
             popover.behavior = .transient
             popover.animates = true
+            popover.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
             popover.contentSize = NSSize(width: 360, height: 600)
             popover.contentViewController = NSHostingController(
                 rootView: ControlPanelPopoverView(
@@ -151,15 +208,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Mouse drag selection or Double Cmd+C -> Show Pill Bar
         mgr.onShowSelectionPopup = { payload in
+            if ProcessInfo.processInfo.environment["SNAPLEX_SELECTION_TRACE"] == "1" {
+                NSLog("SnapLex selection trace: app presenter received request=%@ trigger=%@ characters=%ld",
+                      payload.diagnosticID,
+                      payload.trigger.rawValue,
+                      payload.text.count)
+            }
             TranslatorViewModel.shared.preparePillSelection(
                 text: payload.text,
                 sourceApp: payload.sourceApp,
-                trigger: payload.trigger
+                trigger: payload.trigger,
+                diagnosticID: payload.diagnosticID
             )
-            WindowManager.shared.showPillBar(nearMouse: true)
+            WindowManager.shared.showPillBar(nearMouse: true, diagnosticID: payload.diagnosticID)
         }
 
-        // Option + A -> Directly open Translation Card
+        // Control + Command + A -> Directly open Translation Card
         mgr.onTriggerDirectTranslateCard = { payload in
             TranslatorViewModel.shared.startTranslation(
                 text: payload.text,
@@ -195,7 +259,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         mgr.onTriggerManualPanel = {
-            WindowManager.shared.showTranslationCard(nearMouse: true, focusInput: true)
+            WindowManager.shared.toggleTranslationCard(nearMouse: true, focusInput: true)
         }
 
         mgr.onOutsideMouseDown = { pt in
@@ -214,7 +278,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func triggerSelectionTranslate() {
         Task { @MainActor in
+            guard let sourcePID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                  sourcePID != NSRunningApplication.current.processIdentifier else { return }
             guard let payload = await SelectionAndHotKeyManager.shared.grabCurrentSelection() else { return }
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == sourcePID else { return }
             TranslatorViewModel.shared.startTranslation(
                 text: payload.text,
                 mode: .translate,

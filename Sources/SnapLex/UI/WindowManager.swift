@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+import os
+
+private let selectionWindowTraceEnabled = ProcessInfo.processInfo.environment["SNAPLEX_SELECTION_TRACE"] == "1"
 
 public final class BorderlessKeyablePanel: NSPanel {
     override public var canBecomeKey: Bool { true }
@@ -20,6 +23,10 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     private var translationHistoryWindow: NSWindow?
     private var screenshotHistoryWindow: NSWindow?
     private var dashboardWindow: NSWindow?
+    private let selectionLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "SnapLex",
+        category: "Selection"
+    )
 
     public private(set) var isSettingsPinned: Bool = false
     private var lastAnchorPoint: NSPoint = .zero
@@ -30,9 +37,21 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     }
 
     public func ownsScreenPoint(_ point: NSPoint) -> Bool {
-        [pillPanel, cardPanel, settingsWindow, translationHistoryWindow, screenshotHistoryWindow, dashboardWindow]
-            .compactMap { $0 }
-            .contains { $0.isVisible && $0.frame.contains(point) }
+        let visibleFrames = NSApp.windows.map { window in
+            WindowScreenFrame(
+                minX: window.frame.minX,
+                minY: window.frame.minY,
+                maxX: window.frame.maxX,
+                maxY: window.frame.maxY,
+                isVisible: window.isVisible,
+                passesMouseEventsThrough: window.ignoresMouseEvents
+            )
+        }
+        return WindowScreenOwnershipPolicy.owns(
+            pointX: point.x,
+            pointY: point.y,
+            windows: visibleFrames
+        )
     }
 
     private override init() {
@@ -44,7 +63,6 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         // When user clicks "翻译" on the Snipaste Capture Toolbar
         SnipasteCaptureManager.shared.onOCRTranslateImage = { [weak self] image, screenRect in
             guard let self = self else { return }
-            ScreenshotHistoryStore.shared.save(image)
             self.lastAnchorPoint = CGPoint(x: screenRect.midX, y: screenRect.minY)
             Task { @MainActor in
                 let text = await VisionOCRService.shared.recognizeText(in: image)
@@ -63,11 +81,11 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         // When user clicks "提取文字" on the Snipaste Capture Toolbar
         SnipasteCaptureManager.shared.onOCRExtractText = { [weak self] image, screenRect in
             guard let self = self else { return }
-            ScreenshotHistoryStore.shared.save(image)
             self.lastAnchorPoint = CGPoint(x: screenRect.midX, y: screenRect.minY)
             Task { @MainActor in
                 let text = await VisionOCRService.shared.recognizeText(in: image)
                 if !text.isEmpty {
+                    SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                     TranslatorViewModel.shared.preparePillSelection(
@@ -83,11 +101,24 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     // MARK: - Stage 1: Show Pill Bar
 
-    public func showPillBar(nearMouse: Bool = true) {
+    public func showPillBar(nearMouse: Bool = true, diagnosticID: String? = nil) {
+        selectionLogger.debug("pill presentation started request=\(diagnosticID ?? "-", privacy: .public) nearMouse=\(nearMouse, privacy: .public) alreadyVisible=\(self.pillPanel?.isVisible == true, privacy: .public)")
+        if selectionWindowTraceEnabled {
+            NSLog("SnapLex selection trace: pill presentation started request=%@ nearMouse=%@ alreadyVisible=%@",
+                  diagnosticID ?? "-",
+                  nearMouse ? "yes" : "no",
+                  pillPanel?.isVisible == true ? "yes" : "no")
+        }
         if pillPanel == nil {
             createPillPanel()
         }
-        guard let pill = pillPanel else { return }
+        guard let pill = pillPanel else {
+            selectionLogger.error("pill presentation failed request=\(diagnosticID ?? "-", privacy: .public) reason=panel-unavailable")
+            if selectionWindowTraceEnabled {
+                NSLog("SnapLex selection trace: pill presentation failed request=%@ reason=panel-unavailable", diagnosticID ?? "-")
+            }
+            return
+        }
         if let hosting = pill.contentView {
             hosting.invalidateIntrinsicContentSize()
             hosting.layoutSubtreeIfNeeded()
@@ -118,6 +149,13 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
         pill.level = .popUpMenu
         pill.orderFrontRegardless()
+        selectionLogger.info("pill panel ordered front request=\(diagnosticID ?? "-", privacy: .public) visible=\(pill.isVisible, privacy: .public) width=\(Int(pill.frame.width), privacy: .public) height=\(Int(pill.frame.height), privacy: .public)")
+        if selectionWindowTraceEnabled {
+            NSLog("SnapLex selection trace: pill panel ordered front request=%@ visible=%@ frame=%@",
+                  diagnosticID ?? "-",
+                  pill.isVisible ? "yes" : "no",
+                  NSStringFromRect(pill.frame))
+        }
     }
 
     public func hidePillBar() {
@@ -126,12 +164,21 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     // MARK: - Stage 2: Show Translation Card
 
-    public func showTranslationCard(atSavedAnchor: Bool = false, nearMouse: Bool = true, focusInput: Bool = false) {
+    public func showTranslationCard(
+        atSavedAnchor: Bool = false,
+        nearMouse: Bool = true,
+        focusInput: Bool = false,
+        diagnosticID: String? = nil
+    ) {
+        selectionLogger.info("translation card presentation started selectionRequest=\(diagnosticID ?? "-", privacy: .public) nearMouse=\(nearMouse, privacy: .public) focusInput=\(focusInput, privacy: .public) existingVisible=\(self.cardPanel?.isVisible == true, privacy: .public)")
         hidePillBar()
         if cardPanel == nil {
             createCardPanel()
         }
-        guard let card = cardPanel else { return }
+        guard let card = cardPanel else {
+            selectionLogger.error("translation card presentation failed selectionRequest=\(diagnosticID ?? "-", privacy: .public) reason=panel-unavailable")
+            return
+        }
         if let hosting = card.contentView {
             hosting.invalidateIntrinsicContentSize()
             hosting.layoutSubtreeIfNeeded()
@@ -164,6 +211,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             // source app. The user can still click the card to edit its input.
             card.orderFrontRegardless()
         }
+        selectionLogger.info("translation card ordered front selectionRequest=\(diagnosticID ?? "-", privacy: .public) visible=\(card.isVisible, privacy: .public) focusInput=\(focusInput, privacy: .public) width=\(Int(card.frame.width), privacy: .public) height=\(Int(card.frame.height), privacy: .public)")
     }
 
     /// Dynamically updates `cardPanel` size when async translation or dictionary text arrives, keeping the top edge anchored.
@@ -202,6 +250,15 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
     public func hideTranslationCard() {
         cardPanel?.orderOut(nil)
+    }
+
+    public func toggleTranslationCard(nearMouse: Bool = true, focusInput: Bool = true) {
+        switch TranslationCardShortcutAction.action(isVisible: cardPanel?.isVisible == true) {
+        case .show:
+            showTranslationCard(nearMouse: nearMouse, focusInput: focusInput)
+        case .hide:
+            hideTranslationCard()
+        }
     }
 
     func dismissVisibleUtilityWindow() {
@@ -245,8 +302,8 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         let view = SelectionPillBarView(
             onSelectAction: { [weak self] mode in
                 guard let self = self else { return }
-                TranslatorViewModel.shared.startTranslation(mode: mode)
-                self.showTranslationCard(atSavedAnchor: true, nearMouse: true)
+                let diagnosticID = TranslatorViewModel.shared.startPillSelectionTranslation(mode: mode)
+                self.showTranslationCard(atSavedAnchor: true, nearMouse: true, diagnosticID: diagnosticID)
             },
             onTriggerScreenshot: { [weak self] in
                 self?.hidePillBar()

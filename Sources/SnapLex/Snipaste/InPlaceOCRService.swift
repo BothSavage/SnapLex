@@ -30,82 +30,68 @@ public final class InPlaceOCRService: @unchecked Sendable {
     private init() {}
 
     /// Step 1: Recognize text blocks with bounding boxes from an NSImage, merging lines into natural paragraph blocks
+    @MainActor
     public func recognizeBlocks(in image: NSImage) async -> [OCRTextBlock] {
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return []
         }
 
-        return await withCheckedContinuation { continuation in
-            let request = VNRecognizeTextRequest { req, _ in
-                guard let observations = req.results as? [VNRecognizedTextObservation], !observations.isEmpty else {
-                    continuation.resume(returning: [])
-                    return
+        let observations = await VisionTextRecognition.recognize(
+            cgImage, languages: ["zh-Hans", "zh-Hant", "en-US", "ja-JP"]
+        )
+        guard !observations.isEmpty else { return [] }
+
+        struct RawLine {
+            let text: String
+            let box: CGRect // Vision normalized (0..1, bottom-left origin)
+        }
+
+        var rawLines: [RawLine] = []
+        for obs in observations {
+            if let top = obs.topCandidates(1).first {
+                let str = top.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !str.isEmpty {
+                    rawLines.append(RawLine(text: str, box: obs.boundingBox))
                 }
-
-                struct RawLine {
-                    let text: String
-                    let box: CGRect // Vision normalized (0..1, bottom-left origin)
-                }
-
-                var rawLines: [RawLine] = []
-                for obs in observations {
-                    if let top = obs.topCandidates(1).first {
-                        let str = top.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !str.isEmpty {
-                            rawLines.append(RawLine(text: str, box: obs.boundingBox))
-                        }
-                    }
-                }
-
-                // Sort top-to-bottom (descending maxY in Vision bottom-left coords), then left-to-right
-                rawLines.sort { a, b in
-                    if abs(a.box.maxY - b.box.maxY) > 0.014 {
-                        return a.box.maxY > b.box.maxY
-                    }
-                    return a.box.minX < b.box.minX
-                }
-
-                // Merge vertically adjacent lines that belong to the same paragraph block
-                var mergedBlocks: [OCRTextBlock] = []
-                for line in rawLines {
-                    if let lastIdx = mergedBlocks.indices.last {
-                        let prev = mergedBlocks[lastIdx]
-                        let prevBox = prev.normalizedRect
-                        let curBox = line.box
-
-                        let lineHeight = max(0.012, min(prevBox.height, curBox.height))
-                        let verticalGap = prevBox.minY - curBox.maxY
-                        let sameLeftMargin = abs(prevBox.minX - curBox.minX) < 0.045
-                        let similarHeight = abs(prevBox.height - curBox.height) < lineHeight * 0.65
-
-                        // Merge if on the immediate next line of the same paragraph
-                        if verticalGap >= -lineHeight * 0.35 &&
-                           verticalGap <= lineHeight * 0.85 &&
-                           sameLeftMargin &&
-                           similarHeight {
-                            let joiner = Self.shouldJoinWithSpace(prev.originalText, line.text) ? " " : ""
-                            mergedBlocks[lastIdx].originalText += joiner + line.text
-                            mergedBlocks[lastIdx].normalizedRect = prevBox.union(curBox)
-                            continue
-                        }
-                    }
-                    mergedBlocks.append(OCRTextBlock(originalText: line.text, normalizedRect: line.box))
-                }
-
-                continuation.resume(returning: mergedBlocks)
-            }
-
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US", "ja-JP"]
-
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(returning: [])
             }
         }
+
+        // Sort top-to-bottom (descending maxY in Vision bottom-left coords), then left-to-right
+        rawLines.sort { a, b in
+            if abs(a.box.maxY - b.box.maxY) > 0.014 {
+                return a.box.maxY > b.box.maxY
+            }
+            return a.box.minX < b.box.minX
+        }
+
+        // Merge vertically adjacent lines that belong to the same paragraph block
+        var mergedBlocks: [OCRTextBlock] = []
+        for line in rawLines {
+            if let lastIdx = mergedBlocks.indices.last {
+                let prev = mergedBlocks[lastIdx]
+                let prevBox = prev.normalizedRect
+                let curBox = line.box
+
+                let lineHeight = max(0.012, min(prevBox.height, curBox.height))
+                let verticalGap = prevBox.minY - curBox.maxY
+                let sameLeftMargin = abs(prevBox.minX - curBox.minX) < 0.045
+                let similarHeight = abs(prevBox.height - curBox.height) < lineHeight * 0.65
+
+                // Merge if on the immediate next line of the same paragraph
+                if verticalGap >= -lineHeight * 0.35 &&
+                   verticalGap <= lineHeight * 0.85 &&
+                   sameLeftMargin &&
+                   similarHeight {
+                    let joiner = Self.shouldJoinWithSpace(prev.originalText, line.text) ? " " : ""
+                    mergedBlocks[lastIdx].originalText += joiner + line.text
+                    mergedBlocks[lastIdx].normalizedRect = prevBox.union(curBox)
+                    continue
+                }
+            }
+            mergedBlocks.append(OCRTextBlock(originalText: line.text, normalizedRect: line.box))
+        }
+
+        return mergedBlocks
     }
 
     // MARK: - In-Place Overlay Image Renderer (Matches User's Image 2!)

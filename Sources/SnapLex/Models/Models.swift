@@ -67,12 +67,27 @@ public struct ShortcutBinding: Codable, Equatable {
     public var isReservedForTextEditing: Bool {
         let flags = NSEvent.ModifierFlags(rawValue: modifiers)
             .intersection([.command, .option, .control, .shift])
+        let nonTextKeyCodes: Set<UInt16> = [
+            // Function, navigation, and editing keys do not produce text.
+            36, 48, 51, 53, 115, 116, 117, 119, 121, 123, 124, 125, 126,
+            122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,
+            105, 107, 113, 106, 64, 79, 80, 90
+        ]
+
+        // Option-only combinations with printable keys insert characters on
+        // macOS (for example ⌥A inserts å). A global hotkey must never consume
+        // ordinary text entry, even when the user records a custom shortcut.
+        if flags.contains(.option), !flags.contains(.command) {
+            return !nonTextKeyCodes.contains(keyCode)
+        }
+
         if flags.subtracting(.shift).isEmpty {
-            let functionKeys: Set<UInt16> = [
-                122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,
-                105, 107, 113, 106, 64, 79, 80, 90
-            ]
-            return !functionKeys.contains(keyCode)
+            return !nonTextKeyCodes.contains(keyCode)
+        }
+        if flags.contains(.control), !flags.contains(.command), !nonTextKeyCodes.contains(keyCode) {
+            // Cocoa text controls and terminals use Control+A/E/F/B/N/P, etc.
+            // as editing commands; do not let global shortcuts consume them.
+            return true
         }
         if flags == .command || flags == [.command, .shift] {
             // Select all, undo/redo, cut, copy, paste, delete and text navigation.
@@ -130,19 +145,19 @@ public enum GlobalShortcut: String, CaseIterable, Identifiable {
     }
 
     public var defaultBinding: ShortcutBinding {
-        let option = NSEvent.ModifierFlags.option.rawValue
         let shift = NSEvent.ModifierFlags.shift.rawValue
         let command = NSEvent.ModifierFlags.command.rawValue
+        let controlCommand = command | NSEvent.ModifierFlags.control.rawValue
         switch self {
-        case .selectionTranslate: return .init(keyCode: 0, modifiers: option, keyLabel: "A")
+        case .selectionTranslate: return .init(keyCode: 0, modifiers: controlCommand, keyLabel: "A")
         case .screenshotF1: return .init(keyCode: 122, modifiers: 0, keyLabel: "F1")
-        case .screenshotOptionS: return .init(keyCode: 1, modifiers: option, keyLabel: "S")
-        case .openTranslationCard: return .init(keyCode: 2, modifiers: option, keyLabel: "D")
+        case .screenshotOptionS: return .init(keyCode: 1, modifiers: controlCommand, keyLabel: "S")
+        case .openTranslationCard: return .init(keyCode: 2, modifiers: controlCommand, keyLabel: "D")
         case .pinF3: return .init(keyCode: 99, modifiers: 0, keyLabel: "F3")
-        case .pinOptionP: return .init(keyCode: 35, modifiers: option, keyLabel: "P")
+        case .pinOptionP: return .init(keyCode: 35, modifiers: controlCommand, keyLabel: "P")
         case .restorePin: return .init(keyCode: 99, modifiers: shift, keyLabel: "F3")
-        case .unlockClickThrough: return .init(keyCode: 7, modifiers: option, keyLabel: "X")
-        case .screenRecorder: return .init(keyCode: 15, modifiers: option, keyLabel: "R")
+        case .unlockClickThrough: return .init(keyCode: 7, modifiers: controlCommand, keyLabel: "X")
+        case .screenRecorder: return .init(keyCode: 15, modifiers: controlCommand, keyLabel: "R")
         case .stopRecording: return .init(keyCode: 109, modifiers: 0, keyLabel: "F10")
         case .openSettings: return .init(keyCode: 43, modifiers: command, keyLabel: ",")
         case .quitApp: return .init(keyCode: 12, modifiers: command, keyLabel: "Q")
@@ -169,70 +184,88 @@ public final class AppSettings: ObservableObject {
     ]
 
     @Published public var enableMouseHoverBar: Bool {
-        didSet { UserDefaults.standard.set(enableMouseHoverBar, forKey: "SnapLex.enableMouseHoverBar") }
+        didSet { defaults.set(enableMouseHoverBar, forKey: "SnapLex.enableMouseHoverBar") }
     }
     @Published public var enableDoubleCmdC: Bool {
-        didSet { UserDefaults.standard.set(enableDoubleCmdC, forKey: "SnapLex.enableDoubleCmdC") }
+        didSet { defaults.set(enableDoubleCmdC, forKey: "SnapLex.enableDoubleCmdC") }
     }
     @Published public var appearanceMode: SnapLexAppearanceMode {
         didSet {
-            UserDefaults.standard.set(appearanceMode.rawValue, forKey: "SnapLex.appearanceMode")
+            defaults.set(appearanceMode.rawValue, forKey: "SnapLex.appearanceMode")
         }
     }
     @Published public var translationEngine: TranslationEngine {
         didSet {
-            UserDefaults.standard.set(translationEngine.rawValue, forKey: "SnapLex.translationEngine")
+            defaults.set(translationEngine.rawValue, forKey: "SnapLex.translationEngine")
         }
     }
     @Published public var appLanguage: AppLanguage {
-        didSet { UserDefaults.standard.set(appLanguage.rawValue, forKey: "SnapLex.appLanguage") }
+        didSet { defaults.set(appLanguage.rawValue, forKey: "SnapLex.appLanguage") }
     }
     @Published public var shortcutBindings: [String: ShortcutBinding] {
         didSet {
             if let encoded = try? JSONEncoder().encode(shortcutBindings) {
-                UserDefaults.standard.set(encoded, forKey: "SnapLex.shortcutBindings")
+                defaults.set(encoded, forKey: "SnapLex.shortcutBindings")
             }
         }
     }
     @Published public var recordSelectionTranslations: Bool {
-        didSet { UserDefaults.standard.set(recordSelectionTranslations, forKey: "SnapLex.recordSelectionTranslations") }
+        didSet { defaults.set(recordSelectionTranslations, forKey: "SnapLex.recordSelectionTranslations") }
     }
     @Published public var recordScreenshotTranslations: Bool {
-        didSet { UserDefaults.standard.set(recordScreenshotTranslations, forKey: "SnapLex.recordScreenshotTranslations") }
+        didSet { defaults.set(recordScreenshotTranslations, forKey: "SnapLex.recordScreenshotTranslations") }
     }
-    @Published public var screenshotHistoryLimit: Int {
-        didSet {
-            screenshotHistoryLimit = min(1000, max(1, screenshotHistoryLimit))
-            UserDefaults.standard.set(screenshotHistoryLimit, forKey: "SnapLex.screenshotHistoryLimit")
-            Task { @MainActor in ScreenshotHistoryStore.shared.applyRetentionLimit() }
+    @Published private var storedScreenshotHistoryLimit: Int
+    public var screenshotHistoryLimit: Int {
+        get { storedScreenshotHistoryLimit }
+        set {
+            let limit = min(1000, max(1, newValue))
+            guard limit != storedScreenshotHistoryLimit else { return }
+            storedScreenshotHistoryLimit = limit
+            defaults.set(limit, forKey: "SnapLex.screenshotHistoryLimit")
+            screenshotRetentionChanged()
         }
     }
 
-    private init() {
-        if UserDefaults.standard.object(forKey: "SnapLex.enableMouseHoverBar") == nil {
+    private let defaults: UserDefaults
+    private let screenshotRetentionChanged: @MainActor () -> Void
+
+    private convenience init() {
+        self.init(defaults: .standard)
+    }
+
+    init(
+        defaults: UserDefaults,
+        screenshotRetentionChanged: @escaping @MainActor () -> Void = {
+            ScreenshotHistoryStore.shared.applyRetentionLimit()
+        }
+    ) {
+        self.defaults = defaults
+        self.screenshotRetentionChanged = screenshotRetentionChanged
+        if defaults.object(forKey: "SnapLex.enableMouseHoverBar") == nil {
             self.enableMouseHoverBar = true
         } else {
-            self.enableMouseHoverBar = UserDefaults.standard.bool(forKey: "SnapLex.enableMouseHoverBar")
+            self.enableMouseHoverBar = defaults.bool(forKey: "SnapLex.enableMouseHoverBar")
         }
-        if UserDefaults.standard.object(forKey: "SnapLex.enableDoubleCmdC") == nil {
+        if defaults.object(forKey: "SnapLex.enableDoubleCmdC") == nil {
             self.enableDoubleCmdC = true
         } else {
-            self.enableDoubleCmdC = UserDefaults.standard.bool(forKey: "SnapLex.enableDoubleCmdC")
+            self.enableDoubleCmdC = defaults.bool(forKey: "SnapLex.enableDoubleCmdC")
         }
         self.appearanceMode = SnapLexAppearanceMode(
-            rawValue: UserDefaults.standard.string(forKey: "SnapLex.appearanceMode") ?? "system"
+            rawValue: defaults.string(forKey: "SnapLex.appearanceMode") ?? "system"
         ) ?? .system
         self.translationEngine = TranslationEngine(
-            rawValue: UserDefaults.standard.string(forKey: "SnapLex.translationEngine") ?? "google"
+            rawValue: defaults.string(forKey: "SnapLex.translationEngine") ?? "google"
         ) ?? .google
         self.appLanguage = AppLanguage(
-            rawValue: UserDefaults.standard.string(forKey: "SnapLex.appLanguage") ?? "zh-Hans"
+            rawValue: defaults.string(forKey: "SnapLex.appLanguage") ?? "zh-Hans"
         ) ?? .chinese
 
         let defaultBindings = Dictionary(
             uniqueKeysWithValues: GlobalShortcut.allCases.map { ($0.rawValue, $0.defaultBinding) }
         )
-        if let data = UserDefaults.standard.data(forKey: "SnapLex.shortcutBindings"),
+        if let data = defaults.data(forKey: "SnapLex.shortcutBindings"),
            let saved = try? JSONDecoder().decode([String: ShortcutBinding].self, from: data) {
             let merged = defaultBindings.merging(saved) { _, saved in saved }
             var repaired = merged
@@ -243,20 +276,20 @@ public final class AppSettings: ObservableObject {
             }
             self.shortcutBindings = repaired
             if repaired != merged, let encoded = try? JSONEncoder().encode(repaired) {
-                UserDefaults.standard.set(encoded, forKey: "SnapLex.shortcutBindings")
+                defaults.set(encoded, forKey: "SnapLex.shortcutBindings")
             }
         } else {
             self.shortcutBindings = defaultBindings
         }
-        self.recordSelectionTranslations = UserDefaults.standard.object(forKey: "SnapLex.recordSelectionTranslations") == nil
+        self.recordSelectionTranslations = defaults.object(forKey: "SnapLex.recordSelectionTranslations") == nil
             ? true
-            : UserDefaults.standard.bool(forKey: "SnapLex.recordSelectionTranslations")
-        self.recordScreenshotTranslations = UserDefaults.standard.object(forKey: "SnapLex.recordScreenshotTranslations") == nil
+            : defaults.bool(forKey: "SnapLex.recordSelectionTranslations")
+        self.recordScreenshotTranslations = defaults.object(forKey: "SnapLex.recordScreenshotTranslations") == nil
             ? true
-            : UserDefaults.standard.bool(forKey: "SnapLex.recordScreenshotTranslations")
-        self.screenshotHistoryLimit = UserDefaults.standard.object(forKey: "SnapLex.screenshotHistoryLimit") == nil
+            : defaults.bool(forKey: "SnapLex.recordScreenshotTranslations")
+        self.storedScreenshotHistoryLimit = defaults.object(forKey: "SnapLex.screenshotHistoryLimit") == nil
             ? 100
-            : min(1000, max(1, UserDefaults.standard.integer(forKey: "SnapLex.screenshotHistoryLimit")))
+            : min(1000, max(1, defaults.integer(forKey: "SnapLex.screenshotHistoryLimit")))
     }
 
     public func shortcutBinding(for shortcut: GlobalShortcut) -> ShortcutBinding {

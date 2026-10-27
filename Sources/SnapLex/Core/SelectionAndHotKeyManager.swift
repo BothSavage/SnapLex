@@ -2,11 +2,30 @@ import Foundation
 import AppKit
 import Carbon
 import ApplicationServices
+import CoreGraphics
+import os
+
+private let selectionEventTraceEnabled = ProcessInfo.processInfo.environment["SNAPLEX_SELECTION_TRACE"] == "1"
 
 public struct SelectedTextPayload {
     public let text: String
     public let sourceApp: String
     public let trigger: TranslationTriggerSource
+    /// Correlates selection capture with the UI presentation stage without
+    /// writing the selected text to diagnostic logs.
+    public let diagnosticID: String
+
+    public init(
+        text: String,
+        sourceApp: String,
+        trigger: TranslationTriggerSource,
+        diagnosticID: String = UUID().uuidString
+    ) {
+        self.text = text
+        self.sourceApp = sourceApp
+        self.trigger = trigger
+        self.diagnosticID = diagnosticID
+    }
 }
 
 @MainActor
@@ -17,17 +36,17 @@ public final class SelectionAndHotKeyManager: ObservableObject {
 
     /// Fired when mouse drag-select or double Cmd+C triggers popup
     public var onShowSelectionPopup: ((SelectedTextPayload) -> Void)?
-    /// Fired when hotkey Option+A triggers the Image 2 Translation Card directly
+    /// Fired when the explicit selection-translation shortcut opens the translation card
     public var onTriggerDirectTranslateCard: ((SelectedTextPayload) -> Void)?
-    /// Fired when F1 or Option+S triggers Snipaste Pro Capture & Annotation Overlay
+    /// Fired when a screenshot shortcut triggers the capture and annotation overlay
     public var onTriggerScreenshot: (() -> Void)?
-    /// Fired when F3 or Option+P triggers Snipaste Pro Pin-to-Screen
+    /// Fired when a pin shortcut pins the current image to the screen
     public var onTriggerPinToScreen: (() -> Void)?
     /// Fired when Shift+F3 restores last closed Pin
     public var onTriggerRestoreLastPin: (() -> Void)?
-    /// Fired when Option+X unlocks all Click-Through Pin windows
+    /// Fired when the unlock shortcut enables clicks on pinned images
     public var onTriggerUnlockClickThrough: (() -> Void)?
-    /// Fired when Option+R opens the Screen Recorder Assistant
+    /// Fired when the screen-recording shortcut opens its assistant
     public var onTriggerScreenRecorder: (() -> Void)?
     /// Fired when F10 stops active screen recording
     public var onTriggerStopRecording: (() -> Void)?
@@ -36,35 +55,45 @@ public final class SelectionAndHotKeyManager: ObservableObject {
 
     private var hotKeyRefs: [EventHotKeyRef?] = []
     private var eventHandlerRef: EventHandlerRef?
+    private let hotKeyDispatchGate = GlobalHotKeyDispatchGate()
     private var directTranslationTask: Task<Void, Never>?
+    private let accessibilityReader = SelectionAccessibilityReader()
+    private let selectionLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "SnapLex",
+        category: "Selection"
+    )
+    private var hasStarted = false
+    private var globalMouseMonitorRegistration = GlobalMouseMonitorRegistrationCoordinator()
+    private let mouseGestureGenerationGate = SelectionMouseGestureGenerationGate()
 
     // Mouse drag selection state
     private var globalMouseDownMonitor: Any?
     private var globalMouseUpMonitor: Any?
-    private var mouseDownPoint: NSPoint = .zero
-    private var mouseDownTime: TimeInterval = 0
-    private var mouseDownWasInsideSnapLexWindow = false
+    private var mouseEventAdapter = SelectionMouseEventAdapter()
     private var lastAutoPopupText: String = ""
     private var lastAutoPopupTime: TimeInterval = 0
+    private var lastAutoPopupProcessIdentifier: pid_t?
 
     // Double Cmd+C & AX trust monitor
     private var pasteboardTimer: Timer?
     private var lastChangeCount: Int = NSPasteboard.general.changeCount
-    private var lastCopyTimestamp: TimeInterval = 0
-    private var lastCopiedString: String = ""
-    private var ignoreNextChangeCount: Bool = false
+    private var doubleCopyCandidate = DoubleCopyCandidateState()
+    private var ignoreClipboardChangesUntil: TimeInterval = 0
 
     private init() {}
 
     public func start() {
-        isAXTrusted = isAccessibilityTrusted(prompt: false)
-        if !isAXTrusted {
-            // Prompt macOS system Accessibility dialog on launch so mouse-select works immediately
-            _ = isAccessibilityTrusted(prompt: true)
+        if !hasStarted {
+            hasStarted = true
+            isAXTrusted = isAccessibilityTrusted(prompt: false)
+            if !isAXTrusted {
+                // Prompt macOS system Accessibility dialog on launch so mouse-select works immediately
+                _ = isAccessibilityTrusted(prompt: true)
+            }
+            registerCarbonHotKeys()
+            startPasteboardAndTrustMonitor()
         }
-        registerCarbonHotKeys()
-        startPasteboardAndTrustMonitor()
-        startGlobalMouseMonitors()
+        ensureGlobalMouseMonitors(force: globalMouseMonitorRegistration.lastAttempt == nil)
     }
 
     public func openSystemAccessibilitySettings() {
@@ -72,6 +101,17 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Marks an app-originated copy so the double-Cmd+C feature cannot mistake
+    /// SnapLex's own non-activating panel for the user's frontmost app.
+    public func noteInternalClipboardWrite() {
+        ignoreClipboardChangesUntil = max(
+            ignoreClipboardChangesUntil,
+            ProcessInfo.processInfo.systemUptime + 1.0
+        )
+        doubleCopyCandidate.reset()
+        lastChangeCount = NSPasteboard.general.changeCount
     }
 
     // MARK: - Accessibility Check
@@ -84,272 +124,382 @@ public final class SelectionAndHotKeyManager: ObservableObject {
 
     // MARK: - Global Mouse Selection Monitor (Works in Chrome / Safari / Zhihu / PDF / IDE)
 
-    private func startGlobalMouseMonitors() {
-        globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            let pt = NSEvent.mouseLocation
-            let now = ProcessInfo.processInfo.systemUptime
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.mouseDownPoint = pt
-                self.mouseDownTime = now
-                self.mouseDownWasInsideSnapLexWindow = WindowManager.shared.ownsScreenPoint(pt)
-                self.onOutsideMouseDown?(pt)
-            }
-        }
+    private func ensureGlobalMouseMonitors(force: Bool = false) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let isRetry = globalMouseMonitorRegistration.lastAttempt != nil
+        let attempted = globalMouseMonitorRegistration.ensureRegistered(
+            now: now,
+            force: force,
+            registerDown: { self.registerGlobalMouseDownMonitor() },
+            registerUp: { self.registerGlobalMouseUpMonitor() }
+        )
+        guard attempted else { return }
 
-        globalMouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] event in
-            let upPoint = NSEvent.mouseLocation
-            let clickCount = event.clickCount
-            let now = ProcessInfo.processInfo.systemUptime
-            Task { @MainActor in
-                guard let self = self else { return }
-                guard AppSettings.shared.enableMouseHoverBar else { return }
-                guard !self.mouseDownWasInsideSnapLexWindow,
-                      !WindowManager.shared.ownsScreenPoint(upPoint) else { return }
-
-                // Ignore clicks inside SnapLex itself
-                guard let sourceApplication = NSWorkspace.shared.frontmostApplication,
-                      sourceApplication.bundleIdentifier != Bundle.main.bundleIdentifier else {
-                    return
-                }
-
-                let dx = hypot(upPoint.x - self.mouseDownPoint.x, upPoint.y - self.mouseDownPoint.y)
-                let duration = now - self.mouseDownTime
-                let isDragSelect = (dx >= 10 && duration >= 0.05 && duration <= 12.0)
-                let isMultiClickSelect = (clickCount == 2 || clickCount == 3)
-
-                guard isDragSelect || isMultiClickSelect else { return }
-
-                // Text editing and caret/selection gestures inside input controls
-                // must remain owned by the target app. Showing our pill there
-                // steals focus from search boxes, chat composers and editors.
-                guard !self.isEditableTextFocused(in: sourceApplication.processIdentifier) else { return }
-
-                let downPt = self.mouseDownPoint
-                try? await Task.sleep(nanoseconds: 75_000_000) // Wait 75ms for browser/app selection to settle
-
-                // Don't let an async AX read from the previous app open a pill
-                // after the user has already switched windows.
-                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == sourceApplication.processIdentifier else {
-                    return
-                }
-
-                if let selected = await self.extractSelectionAfterMouseUp(downPoint: downPt, upPoint: upPoint, isDrag: isDragSelect),
-                   !selected.isEmpty,
-                   selected.count <= 4000 {
-                    // Avoid re-popping identical selection if user just clicked once
-                    if !isDragSelect && !isMultiClickSelect && selected == self.lastAutoPopupText && (now - self.lastAutoPopupTime) < 1.0 {
-                        return
-                    }
-                    self.lastAutoPopupText = selected
-                    self.lastAutoPopupTime = now
-                    let appName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "macOS"
-                    self.onShowSelectionPopup?(
-                        SelectedTextPayload(text: selected, sourceApp: appName, trigger: .mouseSelect)
-                    )
-                }
-            }
+        let inputMonitoringTrusted = CGPreflightListenEventAccess()
+        selectionLogger.info("global mouse monitor registration attempted down=\(self.globalMouseMonitorRegistration.downRegistered, privacy: .public) up=\(self.globalMouseMonitorRegistration.upRegistered, privacy: .public) axTrusted=\(self.isAXTrusted, privacy: .public) inputMonitoringTrusted=\(inputMonitoringTrusted, privacy: .public) retry=\(isRetry, privacy: .public)")
+        NSLog("SnapLex selection diagnostics: global mouse monitor registration down=%@ up=%@ axTrusted=%@ inputMonitoringTrusted=%@ retry=%@",
+              self.globalMouseMonitorRegistration.downRegistered ? "yes" : "no",
+              self.globalMouseMonitorRegistration.upRegistered ? "yes" : "no",
+              self.isAXTrusted ? "yes" : "no",
+              inputMonitoringTrusted ? "yes" : "no",
+              isRetry ? "yes" : "no")
+        if !self.globalMouseMonitorRegistration.downRegistered || !self.globalMouseMonitorRegistration.upRegistered {
+            selectionLogger.error("global mouse selection is unavailable; registration will retry after permission changes or backoff")
         }
     }
 
-    /// Multi-tier selection extraction:
-    /// Tier 1: Enable AXManualAccessibility/AXEnhancedUserInterface on target PID (required for Chrome/Arc/Edge/Electron) & read kAXSelectedTextAttribute
-    /// Tier 2: Hit-test element at mouse position via AXUIElementCopyElementAtPosition & read kAXSelectedTextAttribute
-    /// Tier 3: Non-destructive synthetic Cmd+C fallback (captures selection in any web/PDF/canvas app when AX attribute isn't exposed)
-    private func extractSelectionAfterMouseUp(downPoint: NSPoint, upPoint: NSPoint, isDrag: Bool) async -> String? {
-        if let frontApp = NSWorkspace.shared.frontmostApplication {
-            enableChromiumAccessibility(pid: frontApp.processIdentifier)
+    private func registerGlobalMouseDownMonitor() -> Bool {
+        globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self else { return }
+            let isLeftMouseDown = event.type == .leftMouseDown
+            if selectionEventTraceEnabled {
+                NSLog("SnapLex selection trace: global monitor callback received stage=down button=%@",
+                      isLeftMouseDown ? "left" : "right")
+            }
+            let point = SelectionMouseEventAdapter.screenPoint(
+                for: event, zeroScreenMaxY: NSScreen.screens.first?.frame.maxY ?? 0,
+                fallbackLocation: NSEvent.mouseLocation
+            )
+            let eventTime = SelectionMouseEventAdapter.timestamp(for: event, fallback: ProcessInfo.processInfo.systemUptime)
+            let processIdentifier = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let isInsideSnapLexWindow = MainActor.assumeIsolated {
+                WindowManager.shared.ownsScreenPoint(point)
+            }
+            self.selectionLogger.debug("global mouse down received button=\(isLeftMouseDown ? "left" : "right", privacy: .public) foregroundPID=\(processIdentifier ?? 0, privacy: .public) clickThroughOverlay=\(isInsideSnapLexWindow, privacy: .public)")
+            if selectionEventTraceEnabled {
+                NSLog("SnapLex selection trace: global monitor callback processed stage=down button=%@ foregroundPID=%d clickThroughOverlay=%@",
+                      isLeftMouseDown ? "left" : "right",
+                      Int32(processIdentifier ?? 0),
+                      isInsideSnapLexWindow ? "yes" : "no")
+            }
+            MainActor.assumeIsolated {
+                if isLeftMouseDown {
+                    let outcome = self.mouseEventAdapter.receive(.leftMouseDown(SelectionMouseDownSnapshot(
+                        x: point.x,
+                        y: point.y,
+                        timestamp: eventTime,
+                        processIdentifier: processIdentifier,
+                        isInsideSnapLexWindow: isInsideSnapLexWindow
+                    )))
+                    self.mouseGestureGenerationGate.update(to: self.mouseEventAdapter.currentGeneration)
+                    if case let .leftMouseDownRecorded(generation, replacedPendingDown) = outcome {
+                        self.selectionLogger.debug("mouse event bridge recorded left-down generation=\(generation, privacy: .public) replacedPending=\(replacedPendingDown, privacy: .public)")
+                    }
+                } else {
+                    let outcome = self.mouseEventAdapter.receive(.rightMouseDown)
+                    self.mouseGestureGenerationGate.update(to: self.mouseEventAdapter.currentGeneration)
+                    if case let .rightMouseDownCancelled(generation, cancelledPendingDown) = outcome {
+                        self.selectionLogger.debug("mouse event bridge cancelled by right-down generation=\(generation, privacy: .public) hadPending=\(cancelledPendingDown, privacy: .public)")
+                    }
+                }
+                self.onOutsideMouseDown?(point)
+            }
+        }
+        return globalMouseDownMonitor != nil
+    }
+
+    private func registerGlobalMouseUpMonitor() -> Bool {
+        globalMouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] event in
+            guard let self else { return }
+            if selectionEventTraceEnabled {
+                NSLog("SnapLex selection trace: global monitor callback received stage=up")
+            }
+            let point = SelectionMouseEventAdapter.screenPoint(
+                for: event, zeroScreenMaxY: NSScreen.screens.first?.frame.maxY ?? 0,
+                fallbackLocation: NSEvent.mouseLocation
+            )
+            let eventTime = SelectionMouseEventAdapter.timestamp(for: event, fallback: ProcessInfo.processInfo.systemUptime)
+            let processIdentifier = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let isInsideSnapLexWindow = MainActor.assumeIsolated {
+                WindowManager.shared.ownsScreenPoint(point)
+            }
+            let outcome = MainActor.assumeIsolated {
+                let outcome = self.mouseEventAdapter.receive(.leftMouseUp(SelectionMouseUpSnapshot(
+                    x: point.x,
+                    y: point.y,
+                    timestamp: eventTime,
+                    processIdentifier: processIdentifier,
+                    clickCount: event.clickCount,
+                    isInsideSnapLexWindow: isInsideSnapLexWindow
+                )))
+                self.mouseGestureGenerationGate.update(to: self.mouseEventAdapter.currentGeneration)
+                return outcome
+            }
+            guard case let .gestureCompleted(gesture) = outcome else {
+                self.selectionLogger.debug("global mouse up received paired=false foregroundPID=\(processIdentifier ?? 0, privacy: .public) clickCount=\(event.clickCount, privacy: .public) clickThroughOverlay=\(isInsideSnapLexWindow, privacy: .public)")
+                if selectionEventTraceEnabled {
+                    NSLog("SnapLex selection trace: global monitor callback processed stage=up paired=no foregroundPID=%d clickCount=%ld clickThroughOverlay=%@",
+                          Int32(processIdentifier ?? 0), event.clickCount, isInsideSnapLexWindow ? "yes" : "no")
+                }
+                return
+            }
+            self.selectionLogger.debug("global mouse up received paired=true foregroundPID=\(processIdentifier ?? 0, privacy: .public) clickCount=\(event.clickCount, privacy: .public) clickThroughOverlay=\(isInsideSnapLexWindow, privacy: .public) gestureDistance=\(Int(gesture.distance), privacy: .public) gestureMilliseconds=\(Int(gesture.duration * 1_000), privacy: .public)")
+            if selectionEventTraceEnabled {
+                NSLog("SnapLex selection trace: global monitor callback processed stage=up paired=yes downPID=%d upPID=%d clickCount=%ld downInSnapLex=%@ upInSnapLex=%@ distance=%ld durationMs=%ld",
+                      Int32(gesture.down.processIdentifier ?? 0),
+                      Int32(processIdentifier ?? 0), event.clickCount,
+                      gesture.down.isInsideSnapLexWindow ? "yes" : "no",
+                      isInsideSnapLexWindow ? "yes" : "no",
+                      Int(gesture.distance), Int(gesture.duration * 1_000))
+            }
+            if SelectionTriggerPolicy.isSelectionGesture(
+                distance: gesture.distance,
+                duration: gesture.duration,
+                clickCount: event.clickCount
+            ) {
+                NSLog("SnapLex selection diagnostics: mouse selection gesture paired=yes foregroundPID=%d clickCount=%ld clickThroughOverlay=%@ distance=%ld durationMs=%ld",
+                      Int32(processIdentifier ?? 0),
+                      event.clickCount,
+                      isInsideSnapLexWindow ? "yes" : "no",
+                      Int(gesture.distance),
+                      Int(gesture.duration * 1_000))
+            }
+            Task { @MainActor [weak self] in
+                await self?.handleMouseSelection(gesture)
+            }
+        }
+        return globalMouseUpMonitor != nil
+    }
+
+    private func refreshGlobalMouseMonitors(reason: String) {
+        if let globalMouseDownMonitor {
+            NSEvent.removeMonitor(globalMouseDownMonitor)
+            self.globalMouseDownMonitor = nil
+        }
+        if let globalMouseUpMonitor {
+            NSEvent.removeMonitor(globalMouseUpMonitor)
+            self.globalMouseUpMonitor = nil
+        }
+        globalMouseMonitorRegistration.reset()
+        _ = mouseEventAdapter.receive(.rightMouseDown)
+        mouseGestureGenerationGate.update(to: mouseEventAdapter.currentGeneration)
+        selectionLogger.info("global mouse monitors refreshed reason=\(reason, privacy: .public)")
+        NSLog("SnapLex selection diagnostics: global mouse monitors refreshed reason=%@", reason)
+        ensureGlobalMouseMonitors(force: true)
+    }
+
+    private func handleMouseSelection(_ gesture: SelectionMouseGestureSnapshot) async {
+        let downProcessIdentifier = gesture.down.processIdentifier
+        let processIdentifier = gesture.up.processIdentifier
+        guard let processIdentifier,
+              let sourceApplication = NSRunningApplication(processIdentifier: processIdentifier) else {
+            selectionLogger.debug("mouse selection suppressed reason=foreground-changed-during-gesture downPID=\(downProcessIdentifier ?? 0, privacy: .public) upPID=\(processIdentifier ?? 0, privacy: .public)")
+            return
         }
 
-        if let selectedText = await readSelectedTextWithRetries(at: upPoint) {
-            return selectedText
+        let requestID = UUID().uuidString
+        selectionLogger.debug("mouse selection started request=\(requestID, privacy: .public) sourcePID=\(sourceApplication.processIdentifier, privacy: .public)")
+        if selectionEventTraceEnabled {
+            NSLog("SnapLex selection trace: flow started request=%@ sourcePID=%d", requestID, Int32(sourceApplication.processIdentifier))
         }
+        let outcome = await SelectionMouseSelectionFlow.resolve(
+            gesture: gesture,
+            ownProcessIdentifier: NSRunningApplication.current.processIdentifier,
+            isEnabled: { AppSettings.shared.enableMouseHoverBar },
+            isCurrentGesture: { self.mouseEventAdapter.isCurrent(gesture) },
+            foregroundProcessIdentifier: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            waitForSelectionToSettle: {
+                let startedAt = DispatchTime.now().uptimeNanoseconds
+                try? await Task.sleep(nanoseconds: 75_000_000)
+                let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000)
+                self.selectionLogger.debug("mouse selection settle wait completed request=\(requestID, privacy: .public) milliseconds=\(elapsedMilliseconds, privacy: .public)")
+            },
+            readAccessibility: { gesture in
+                let zeroScreenMaxY = Double(NSScreen.screens.first?.frame.maxY ?? 0)
+                return await self.accessibilityReader.inspectSelection(
+                    processIdentifier: sourceApplication.processIdentifier,
+                    downX: gesture.down.x,
+                    downY: gesture.down.y,
+                    upX: gesture.up.x,
+                    upY: gesture.up.y,
+                    zeroScreenMaxY: zeroScreenMaxY,
+                    shouldProceed: { [mouseGestureGenerationGate] in
+                        mouseGestureGenerationGate.isCurrent(gesture.generation)
+                    }
+                )
+            },
+            isDuplicate: { text, timestamp in
+                SelectionTriggerPolicy.isDuplicate(
+                    text: text,
+                    processIdentifier: sourceApplication.processIdentifier,
+                    lastText: self.lastAutoPopupText,
+                    lastProcessIdentifier: self.lastAutoPopupProcessIdentifier,
+                    now: timestamp,
+                    lastTime: self.lastAutoPopupTime
+                )
+            },
+            readCompatibilitySelection: { snapshot in
+                guard SelectionCompatibilityPolicy.canCopyWeChatSelection(
+                    bundleIdentifier: sourceApplication.bundleIdentifier,
+                    sourceProcessIdentifier: processIdentifier,
+                    snapshot: snapshot
+                ), self.isAccessibilityTrusted(prompt: false) else { return nil }
+                self.noteInternalClipboardWrite()
+                defer { self.noteInternalClipboardWrite() }
+                return await SelectionClipboardCapture.readSelection(
+                    from: .general,
+                    canContinue: {
+                        self.mouseEventAdapter.isCurrent(gesture)
+                            && AppSettings.shared.enableMouseHoverBar
+                            && NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier
+                    },
+                    sendCopy: { self.simulateCmdC() }
+                )
+            },
+            onAccepted: { selected in
+                self.lastAutoPopupText = selected
+                self.lastAutoPopupTime = gesture.up.timestamp
+                self.lastAutoPopupProcessIdentifier = sourceApplication.processIdentifier
+                let appName = sourceApplication.localizedName ?? "macOS"
+                if selectionEventTraceEnabled {
+                    NSLog("SnapLex selection trace: accepted callback emitted request=%@ characters=%ld", requestID, selected.count)
+                }
+                self.onShowSelectionPopup?(
+                    SelectedTextPayload(
+                        text: selected,
+                        sourceApp: appName,
+                        trigger: .mouseSelect,
+                        diagnosticID: requestID
+                    )
+                )
+            }
+        )
 
-        // Tier 3: Synthetic Cmd+C fallback (works in 100% of browsers & apps even before Chrome finishes building its AX tree)
+        switch outcome {
+        case let .suppressedBeforeAccessibility(reason):
+            selectionLogger.info("mouse selection suppressed request=\(requestID, privacy: .public) stage=preflight reason=\(reason.rawValue, privacy: .public) clicks=\(gesture.up.clickCount, privacy: .public) distance=\(gesture.distance, privacy: .public) duration=\(gesture.duration, privacy: .public)")
+            traceMouseSelectionOutcome("suppressed stage=preflight reason=\(reason.rawValue)", requestID: requestID)
+        case .cancelledBeforeAccessibility:
+            selectionLogger.debug("mouse selection cancelled request=\(requestID, privacy: .public) stage=before-accessibility reason=gesture-or-app-changed")
+            traceMouseSelectionOutcome("cancelled stage=before-accessibility reason=gesture-or-app-changed", requestID: requestID)
+        case let .cancelledAfterAccessibility(snapshot):
+            logMouseAccessibilitySnapshot(snapshot, requestID: requestID)
+            selectionLogger.debug("mouse selection cancelled request=\(requestID, privacy: .public) stage=after-accessibility reason=gesture-or-app-changed")
+            traceMouseSelectionOutcome("cancelled stage=after-accessibility reason=gesture-or-app-changed", requestID: requestID)
+        case let .suppressedAfterAccessibility(reason, snapshot):
+            logMouseAccessibilitySnapshot(snapshot, requestID: requestID)
+            selectionLogger.info("mouse selection suppressed request=\(requestID, privacy: .public) stage=accessibility reason=\(reason.rawValue, privacy: .public) timedOut=\(snapshot.timedOut, privacy: .public) sourcePID=\(sourceApplication.processIdentifier, privacy: .public) downPID=\(snapshot.downProcessIdentifier ?? 0, privacy: .public) upPID=\(snapshot.upProcessIdentifier ?? 0, privacy: .public)")
+            traceMouseSelectionOutcome("suppressed stage=accessibility reason=\(reason.rawValue) timedOut=\(snapshot.timedOut)", requestID: requestID)
+        case let .accepted(snapshot):
+            logMouseAccessibilitySnapshot(snapshot, requestID: requestID)
+            selectionLogger.info("mouse selection accepted request=\(requestID, privacy: .public) characters=\(snapshot.selectedText?.count ?? 0, privacy: .public) sourcePID=\(sourceApplication.processIdentifier, privacy: .public)")
+            traceMouseSelectionOutcome("accepted characters=\(snapshot.selectedText?.count ?? 0) axMs=\(snapshot.durationMilliseconds)", requestID: requestID)
+        case let .acceptedByCompatibilityCopy(text, snapshot):
+            logMouseAccessibilitySnapshot(snapshot, requestID: requestID)
+            selectionLogger.info("mouse selection accepted request=\(requestID, privacy: .public) capture=wechat-copy characters=\(text.count, privacy: .public) sourcePID=\(processIdentifier, privacy: .public)")
+            traceMouseSelectionOutcome("accepted capture=wechat-copy characters=\(text.count)", requestID: requestID)
+        }
+    }
+
+    private func traceMouseSelectionOutcome(_ outcome: String, requestID: String) {
+        guard selectionEventTraceEnabled else { return }
+        NSLog("SnapLex selection trace: flow outcome request=%@ %@", requestID, outcome)
+    }
+
+    private func logMouseAccessibilitySnapshot(_ snapshot: SelectionAXSnapshot, requestID: String) {
+        selectionLogger.debug("mouse selection AX request=\(requestID, privacy: .public) milliseconds=\(snapshot.durationMilliseconds, privacy: .public) queueWait=\(snapshot.queueWaitMilliseconds, privacy: .public) worker=\(snapshot.workerDurationMilliseconds, privacy: .public) calls=\(snapshot.accessibilityCallCount, privacy: .public) error=\(snapshot.lastAccessibilityError ?? 0, privacy: .public) timedOut=\(snapshot.timedOut, privacy: .public) focus=\(String(describing: snapshot.focusedTarget), privacy: .public) focusPID=\(snapshot.focusedProcessIdentifier ?? 0, privacy: .public) down=\(String(describing: snapshot.downTarget), privacy: .public) up=\(String(describing: snapshot.upTarget), privacy: .public) depthLimitDown=\(snapshot.downAncestorLimitReached, privacy: .public) depthLimitUp=\(snapshot.upAncestorLimitReached, privacy: .public)")
+        if selectionEventTraceEnabled {
+            NSLog("SnapLex selection trace: AX snapshot request=%@ focusTarget=%@ focusPID=%d downTarget=%@ upTarget=%@ downPID=%d upPID=%d durationMs=%ld queueWaitMs=%ld workerMs=%ld calls=%ld error=%d timedOut=%@ depthLimitDown=%@ depthLimitUp=%@",
+                  requestID,
+                  String(describing: snapshot.focusedTarget),
+                  Int32(snapshot.focusedProcessIdentifier ?? 0),
+                  String(describing: snapshot.downTarget),
+                  String(describing: snapshot.upTarget),
+                  Int32(snapshot.downProcessIdentifier ?? 0),
+                  Int32(snapshot.upProcessIdentifier ?? 0),
+                  snapshot.durationMilliseconds,
+                  snapshot.queueWaitMilliseconds,
+                  snapshot.workerDurationMilliseconds,
+                  snapshot.accessibilityCallCount,
+                  snapshot.lastAccessibilityError ?? 0,
+                  snapshot.timedOut ? "yes" : "no",
+                  snapshot.downAncestorLimitReached ? "yes" : "no",
+                  snapshot.upAncestorLimitReached ? "yes" : "no")
+        }
+        if snapshot.downAncestorLimitReached || snapshot.upAncestorLimitReached {
+            selectionLogger.error("mouse selection AX ancestor traversal reached its safety limit request=\(requestID, privacy: .public) down=\(snapshot.downAncestorLimitReached, privacy: .public) up=\(snapshot.upAncestorLimitReached, privacy: .public)")
+        }
+    }
+
+    /// Copies only after Accessibility confirmed both selection endpoints are
+    /// outside editable controls. Its single pasteboard change is ignored by
+    /// the double-copy detector.
+    private func syntheticCopySelection(previousChangeCount: Int) async -> String? {
         let pb = NSPasteboard.general
-        let prevCount = pb.changeCount
-        ignoreNextChangeCount = true
+        ignoreClipboardChangesUntil = ProcessInfo.processInfo.systemUptime + 0.8
         simulateCmdC()
-
         try? await Task.sleep(nanoseconds: 85_000_000) // 85ms wait for pasteboard update
-        defer { ignoreNextChangeCount = false }
+        let currentChangeCount = pb.changeCount
+        lastChangeCount = currentChangeCount
+        doubleCopyCandidate.reset()
 
-        if pb.changeCount != prevCount,
+        if currentChangeCount != previousChangeCount,
            let copied = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !copied.isEmpty {
-            lastChangeCount = pb.changeCount
             return copied
         }
-
         return nil
     }
 
-    private func enableChromiumAccessibility(pid: pid_t) {
-        let appElem = AXUIElementCreateApplication(pid)
-        AXUIElementSetAttributeValue(appElem, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        AXUIElementSetAttributeValue(appElem, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-    }
-
-    /// Accessibility selection can lag the mouse-up event, especially on the first
-    /// interaction after an app becomes active. Retry focused and hit-tested AX
-    /// reads briefly before falling back to synthetic copy.
-    private func readSelectedTextWithRetries(at point: NSPoint?) async -> String? {
-        guard isAccessibilityTrusted(prompt: false) else { return nil }
-
-        for attempt in 0..<3 {
-            if let text = readSelectedTextViaAX()?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !text.isEmpty {
-                return text
-            }
-            if let point,
-               let text = readSelectedTextAtPosition(point)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !text.isEmpty {
-                return text
-            }
-            if attempt < 2 {
-                try? await Task.sleep(nanoseconds: 45_000_000)
-            }
-        }
-        return nil
-    }
-
-    private func readSelectedTextAtPosition(_ cocoaPoint: NSPoint) -> String? {
-        guard let mainScreenHeight = NSScreen.screens.first?.frame.height else { return nil }
-        // Accessibility uses top-left screen origin
-        let cgX = Float(cocoaPoint.x)
-        let cgY = Float(mainScreenHeight - cocoaPoint.y)
-
-        let systemWide = AXUIElementCreateSystemWide()
-        var hitElement: AXUIElement?
-        let err = AXUIElementCopyElementAtPosition(systemWide, cgX, cgY, &hitElement)
-        guard err == .success, let elem = hitElement else { return nil }
-
-        var current: AXUIElement? = elem
-        for _ in 0..<5 {
-            guard let target = current else { break }
-            var selectedText: CFTypeRef?
-            if AXUIElementCopyAttributeValue(target, kAXSelectedTextAttribute as CFString, &selectedText) == .success,
-               let str = selectedText as? String,
-               !str.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return str
-            }
-            var parent: CFTypeRef?
-            if AXUIElementCopyAttributeValue(target, kAXParentAttribute as CFString, &parent) == .success,
-               let p = axElement(from: parent) {
-                current = p
-            } else {
-                break
-            }
-        }
-        return nil
-    }
-
-    private func isEditableTextFocused(in processIdentifier: pid_t) -> Bool {
-        let appElement = AXUIElementCreateApplication(processIdentifier)
-        var focusedValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            appElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedValue
-        ) == .success, let focused = axElement(from: focusedValue) else {
-            return false
-        }
-
-        var current: AXUIElement? = focused
-        for _ in 0..<8 {
-            guard let element = current else { break }
-
-            var roleValue: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
-               let role = roleValue as? String,
-               ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXSecureTextField", "AXTextEntryArea"].contains(role) {
-                return true
-            }
-
-            var editableAncestor: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, "AXEditableAncestor" as CFString, &editableAncestor) == .success,
-               axElement(from: editableAncestor) != nil {
-                return true
-            }
-
-            var parentValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parentValue) == .success,
-                  let parent = axElement(from: parentValue) else {
-                break
-            }
-            current = parent
-        }
-        return false
-    }
-
-    // MARK: - Grab Selected Text for Hotkey Option+A
+    // MARK: - Grab Selected Text for the explicit translate shortcut
 
     public func grabCurrentSelection() async -> SelectedTextPayload? {
-        let frontApp = NSWorkspace.shared.frontmostApplication
-        let appName = frontApp?.localizedName ?? "macOS"
-        if let pid = frontApp?.processIdentifier {
-            enableChromiumAccessibility(pid: pid)
+        let requestID = UUID().uuidString
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              frontApp.processIdentifier != NSRunningApplication.current.processIdentifier else {
+            selectionLogger.debug("direct selection suppressed request=\(requestID, privacy: .public) reason=no-external-frontmost-app")
+            return nil
         }
-
-        if let axText = await readSelectedTextWithRetries(at: NSEvent.mouseLocation) {
-            return SelectedTextPayload(
-                text: axText,
-                sourceApp: appName,
-                trigger: .selection
-            )
-        }
-
-        if isAccessibilityTrusted(prompt: false) {
-            let pb = NSPasteboard.general
-            let prevCount = pb.changeCount
-            ignoreNextChangeCount = true
-            simulateCmdC()
-
-            try? await Task.sleep(nanoseconds: 90_000_000)
-            if pb.changeCount != prevCount,
-               let copied = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !copied.isEmpty {
-                lastChangeCount = pb.changeCount
-                ignoreNextChangeCount = false
-                return SelectedTextPayload(text: copied, sourceApp: appName, trigger: .selection)
+        selectionLogger.info("direct selection started request=\(requestID, privacy: .public) sourcePID=\(frontApp.processIdentifier, privacy: .public)")
+        let point = NSEvent.mouseLocation
+        let zeroScreenMaxY = Double(NSScreen.screens.first?.frame.maxY ?? 0)
+        let outcome = await SelectionDirectCaptureFlow.resolve(
+            sourceProcessIdentifier: frontApp.processIdentifier,
+            ownProcessIdentifier: NSRunningApplication.current.processIdentifier,
+            hasAccessibilityPermission: { self.isAccessibilityTrusted(prompt: false) },
+            foregroundProcessIdentifier: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            readAccessibility: {
+                await self.accessibilityReader.inspectSelection(
+                    processIdentifier: frontApp.processIdentifier,
+                    downX: point.x,
+                    downY: point.y,
+                    upX: point.x,
+                    upY: point.y,
+                    zeroScreenMaxY: zeroScreenMaxY
+                )
+            },
+            synthesizeCopy: {
+                let previousChangeCount = NSPasteboard.general.changeCount
+                return await self.syntheticCopySelection(previousChangeCount: previousChangeCount)
             }
-            ignoreNextChangeCount = false
-        }
+        )
 
-        return nil
-    }
-
-    private func readSelectedTextViaAX() -> String? {
-        if let frontApp = NSWorkspace.shared.frontmostApplication {
-            let appElem = AXUIElementCreateApplication(frontApp.processIdentifier)
-            var focusedInApp: CFTypeRef?
-            if AXUIElementCopyAttributeValue(appElem, kAXFocusedUIElementAttribute as CFString, &focusedInApp) == .success,
-               let element = axElement(from: focusedInApp) {
-                var selectedText: CFTypeRef?
-                if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedText) == .success,
-                   let str = selectedText as? String,
-                   !str.isEmpty {
-                    return str
-                }
-            }
-        }
-
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedElement: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedElement)
-        guard err == .success, let element = axElement(from: focusedElement) else { return nil }
-
-        var selectedText: CFTypeRef?
-        let textErr = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedText)
-        if textErr == .success, let str = selectedText as? String {
-            return str
+        switch outcome {
+        case let .accepted(text, source, snapshot):
+            logDirectAccessibilitySnapshot(snapshot, requestID: requestID)
+            let sourceLabel = source == .accessibility ? "ax" : "synthetic-copy"
+            selectionLogger.info("direct selection accepted request=\(requestID, privacy: .public) source=\(sourceLabel, privacy: .public) characters=\(text.count, privacy: .public) sourcePID=\(frontApp.processIdentifier, privacy: .public)")
+            return SelectedTextPayload(text: text, sourceApp: frontApp.localizedName ?? "macOS", trigger: .selection, diagnosticID: requestID)
+        case let .suppressed(reason, snapshot):
+            if let snapshot { logDirectAccessibilitySnapshot(snapshot, requestID: requestID) }
+            selectionLogger.info("direct selection suppressed request=\(requestID, privacy: .public) reason=\(reason.rawValue, privacy: .public) sourcePID=\(frontApp.processIdentifier, privacy: .public)")
+        case .cancelledBeforeAccessibility:
+            selectionLogger.debug("direct selection cancelled request=\(requestID, privacy: .public) stage=before-accessibility reason=foreground-changed")
+        case let .cancelledAfterAccessibility(snapshot):
+            logDirectAccessibilitySnapshot(snapshot, requestID: requestID)
+            selectionLogger.info("direct selection cancelled request=\(requestID, privacy: .public) stage=after-accessibility reason=foreground-changed")
+        case let .cancelledBeforeSyntheticCopy(snapshot):
+            logDirectAccessibilitySnapshot(snapshot, requestID: requestID)
+            selectionLogger.info("direct selection cancelled request=\(requestID, privacy: .public) stage=before-copy reason=foreground-changed")
+        case let .cancelledAfterSyntheticCopy(snapshot):
+            logDirectAccessibilitySnapshot(snapshot, requestID: requestID)
+            selectionLogger.info("direct selection cancelled request=\(requestID, privacy: .public) stage=after-copy reason=foreground-changed")
         }
         return nil
     }
 
-    private func axElement(from value: CFTypeRef?) -> AXUIElement? {
-        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return value as! AXUIElement
+    private func logDirectAccessibilitySnapshot(_ snapshot: SelectionAXSnapshot, requestID: String) {
+        selectionLogger.debug("direct selection AX request=\(requestID, privacy: .public) milliseconds=\(snapshot.durationMilliseconds, privacy: .public) queueWait=\(snapshot.queueWaitMilliseconds, privacy: .public) worker=\(snapshot.workerDurationMilliseconds, privacy: .public) calls=\(snapshot.accessibilityCallCount, privacy: .public) error=\(snapshot.lastAccessibilityError ?? 0, privacy: .public) timedOut=\(snapshot.timedOut, privacy: .public) focus=\(String(describing: snapshot.focusedTarget), privacy: .public) down=\(String(describing: snapshot.downTarget), privacy: .public) up=\(String(describing: snapshot.upTarget), privacy: .public) depthLimitDown=\(snapshot.downAncestorLimitReached, privacy: .public) depthLimitUp=\(snapshot.upAncestorLimitReached, privacy: .public)")
     }
 
     private func simulateCmdC() {
@@ -366,6 +516,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     // MARK: - Double Cmd+C & AX Trust Polling
 
     private func startPasteboardAndTrustMonitor() {
+        guard pasteboardTimer == nil else { return }
         lastChangeCount = NSPasteboard.general.changeCount
         pasteboardTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -373,60 +524,134 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                 let currentTrust = self.isAccessibilityTrusted(prompt: false)
                 if currentTrust != self.isAXTrusted {
                     self.isAXTrusted = currentTrust
+                    self.refreshGlobalMouseMonitors(reason: currentTrust ? "accessibility-granted" : "accessibility-revoked")
                 }
-                self.checkPasteboardChange()
+                self.ensureGlobalMouseMonitors()
+                await self.checkPasteboardChange()
             }
         }
     }
 
-    private func checkPasteboardChange() {
-        guard AppSettings.shared.enableDoubleCmdC else { return }
+    private func checkPasteboardChange() async {
+        guard AppSettings.shared.enableDoubleCmdC else {
+            doubleCopyCandidate.reset()
+            return
+        }
         let pb = NSPasteboard.general
         let currentCount = pb.changeCount
         guard currentCount != lastChangeCount else { return }
+        let changeCountDelta = currentCount - lastChangeCount
         lastChangeCount = currentCount
 
-        if ignoreNextChangeCount {
-            return
-        }
-
-        guard let str = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !str.isEmpty else {
+        // A clear-and-write copy can advance the count twice between polls.
+        // Accept that as one candidate transaction; a single copy still cannot
+        // open the pill because a second candidate and a safe AX focus are needed.
+        guard SelectionTriggerPolicy.isPlausibleTextClipboardCopyChange(
+            changeCountDelta: changeCountDelta,
+            pasteboardContainsString: pb.types?.contains(.string) == true
+        ) else {
+            doubleCopyCandidate.reset()
+            selectionLogger.debug("double copy candidate reset reason=ambiguous-or-nontext-clipboard-change delta=\(changeCountDelta, privacy: .public)")
             return
         }
 
         let now = ProcessInfo.processInfo.systemUptime
-        let delta = now - lastCopyTimestamp
-
-        if delta <= 0.60 && str == lastCopiedString {
-            lastCopyTimestamp = 0
-            guard let frontmost = NSWorkspace.shared.frontmostApplication,
-                  frontmost.bundleIdentifier != Bundle.main.bundleIdentifier,
-                  !WindowManager.shared.ownsScreenPoint(NSEvent.mouseLocation),
-                  !isEditableTextFocused(in: frontmost.processIdentifier) else {
-                return
-            }
-            let appName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "macOS"
-            onShowSelectionPopup?(SelectedTextPayload(text: str, sourceApp: appName, trigger: .doubleCopy))
-        } else {
-            lastCopyTimestamp = now
-            lastCopiedString = str
+        guard now >= ignoreClipboardChangesUntil else {
+            doubleCopyCandidate.reset()
+            return
         }
+
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            doubleCopyCandidate.reset()
+            return
+        }
+
+        let requestID = UUID().uuidString
+        let hadPendingCopy = doubleCopyCandidate.timestamp != nil
+        let isSecondCopy = doubleCopyCandidate.observeCopy(
+            timestamp: now,
+            processIdentifier: frontmost.processIdentifier
+        )
+        selectionLogger.debug("double copy observed request=\(requestID, privacy: .public) phase=\(isSecondCopy ? "second" : "first", privacy: .public) priorCandidate=\(hadPendingCopy, privacy: .public) changeCountDelta=\(changeCountDelta, privacy: .public) sourcePID=\(frontmost.processIdentifier, privacy: .public)")
+        guard isSecondCopy else {
+            return
+        }
+
+        let secondCopyChangeCount = currentCount
+        let focusedSnapshot = await accessibilityReader.inspectFocusedTarget(
+            processIdentifier: frontmost.processIdentifier
+        )
+        let focusedTarget = focusedSnapshot.target
+        selectionLogger.debug("double copy AX request=\(requestID, privacy: .public) milliseconds=\(focusedSnapshot.durationMilliseconds, privacy: .public) queueWait=\(focusedSnapshot.queueWaitMilliseconds, privacy: .public) worker=\(focusedSnapshot.workerDurationMilliseconds, privacy: .public) calls=\(focusedSnapshot.accessibilityCallCount, privacy: .public) error=\(focusedSnapshot.lastAccessibilityError ?? 0, privacy: .public) timedOut=\(focusedSnapshot.timedOut, privacy: .public) target=\(String(describing: focusedTarget), privacy: .public)")
+        let foregroundUnchanged = NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmost.processIdentifier
+        let clipboardSnapshotIsStable = pb.changeCount == secondCopyChangeCount
+        guard SelectionTriggerPolicy.shouldShowDoubleCopy(
+            focusedTarget: focusedTarget,
+            isEnabled: AppSettings.shared.enableDoubleCmdC,
+            isSecondClipboardChangeWithinWindow: true,
+            clipboardSnapshotIsStable: clipboardSnapshotIsStable,
+            foregroundAppUnchanged: foregroundUnchanged,
+            isDuplicateSelection: false
+        ) else {
+            selectionLogger.info("double copy suppressed request=\(requestID, privacy: .public) reason=editable-unknown-duplicate-or-app-changed target=\(String(describing: focusedTarget), privacy: .public)")
+            return
+        }
+
+        // Read clipboard content only after two fast changes from the same
+        // external app and after AX confirms focus is not an editable control.
+        guard pb.changeCount == secondCopyChangeCount,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmost.processIdentifier,
+              let text = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              pb.changeCount == secondCopyChangeCount,
+              SelectionTriggerPolicy.isValidSelectedText(text) else {
+            selectionLogger.debug("double copy finished request=\(requestID, privacy: .public) result=empty-or-app-changed")
+            return
+        }
+
+        let finalNow = ProcessInfo.processInfo.systemUptime
+        guard !SelectionTriggerPolicy.isDuplicate(
+            text: text,
+            processIdentifier: frontmost.processIdentifier,
+            lastText: lastAutoPopupText,
+            lastProcessIdentifier: lastAutoPopupProcessIdentifier,
+            now: finalNow,
+            lastTime: lastAutoPopupTime
+        ) else {
+            selectionLogger.debug("double copy suppressed request=\(requestID, privacy: .public) reason=duplicate")
+            return
+        }
+
+        lastAutoPopupText = text
+        lastAutoPopupTime = finalNow
+        lastAutoPopupProcessIdentifier = frontmost.processIdentifier
+        let appName = frontmost.localizedName ?? "macOS"
+        selectionLogger.info("double copy accepted request=\(requestID, privacy: .public) characters=\(text.count, privacy: .public) sourcePID=\(frontmost.processIdentifier, privacy: .public)")
+        onShowSelectionPopup?(SelectedTextPayload(text: text, sourceApp: appName, trigger: .doubleCopy))
     }
 
-    // MARK: - Carbon Global HotKeys (Option+A, Option+S, Option+D)
+    // MARK: - Carbon Global HotKeys
 
     private func registerCarbonHotKeys() {
         unregisterCarbonHotKeys()
 
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
-
+        let eventTypes = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyReleased)
+            )
+        ]
         if eventHandlerRef == nil {
-            let handler: EventHandlerUPP = { _, eventRef, _ -> OSStatus in
-                guard let eventRef = eventRef else { return noErr }
+            let gateContext = Unmanaged.passUnretained(hotKeyDispatchGate).toOpaque()
+            let handler: EventHandlerUPP = { _, eventRef, userData -> OSStatus in
+                guard let eventRef = eventRef, let userData = userData else { return noErr }
+                let dispatchGate = Unmanaged<GlobalHotKeyDispatchGate>
+                    .fromOpaque(userData)
+                    .takeUnretainedValue()
                 var hotKeyID = EventHotKeyID()
                 let status = GetEventParameter(
                     eventRef,
@@ -439,6 +664,11 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                 )
                 if status == noErr {
                     let id = hotKeyID.id
+                    if GetEventKind(eventRef) == UInt32(kEventHotKeyReleased) {
+                        dispatchGate.noteRelease(for: id)
+                        return noErr
+                    }
+                    guard dispatchGate.shouldDispatchPress(for: id) else { return noErr }
                     Task { @MainActor in
                         SelectionAndHotKeyManager.shared.handleHotKey(id: id)
                     }
@@ -446,41 +676,58 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                 return noErr
             }
 
-            InstallEventHandler(
-                GetApplicationEventTarget(),
-                handler,
-                1,
-                &eventType,
-                nil,
-                &eventHandlerRef
-            )
+            let status = eventTypes.withUnsafeBufferPointer { eventTypesBuffer in
+                InstallEventHandler(
+                    GetApplicationEventTarget(),
+                    handler,
+                    eventTypesBuffer.count,
+                    eventTypesBuffer.baseAddress,
+                    gateContext,
+                    &eventHandlerRef
+                )
+            }
+            if status != noErr {
+                selectionLogger.error("Carbon keyboard event handler registration failed status=\(status, privacy: .public)")
+                return
+            }
         }
 
         let signature = OSType(0x534C_4558)
+        let globalShortcuts = GlobalShortcut.allCases.filter(\.isGlobal)
         for shortcut in GlobalShortcut.allCases where shortcut.isGlobal {
             guard let eventID = shortcut.eventID else { continue }
             registerSingleHotKey(
                 id: eventID,
                 signature: signature,
-                binding: AppSettings.shared.shortcutBinding(for: shortcut)
+                binding: AppSettings.shared.shortcutBinding(for: shortcut),
+                shortcut: shortcut
             )
         }
+        selectionLogger.info("Carbon keyboard registration attempted globalShortcuts=\(globalShortcuts.count, privacy: .public) registered=\(self.hotKeyRefs.count, privacy: .public)")
     }
 
     public func refreshHotKeys() {
-        guard eventHandlerRef != nil else { return }
         registerCarbonHotKeys()
     }
 
     private func unregisterCarbonHotKeys() {
+        hotKeyDispatchGate.reset()
         for hotKey in hotKeyRefs {
             if let hotKey { UnregisterEventHotKey(hotKey) }
         }
         hotKeyRefs.removeAll()
     }
 
-    private func registerSingleHotKey(id: UInt32, signature: OSType, binding: ShortcutBinding) {
-        guard !binding.isReservedForTextEditing else { return }
+    private func registerSingleHotKey(
+        id: UInt32,
+        signature: OSType,
+        binding: ShortcutBinding,
+        shortcut: GlobalShortcut
+    ) {
+        guard !binding.isReservedForTextEditing else {
+            selectionLogger.error("Carbon shortcut rejected as text-editing key shortcut=\(shortcut.rawValue, privacy: .public)")
+            return
+        }
         let hotKeyID = EventHotKeyID(signature: signature, id: id)
         var ref: EventHotKeyRef?
         let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
@@ -499,24 +746,36 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         )
         if status == noErr {
             hotKeyRefs.append(ref)
+        } else {
+            selectionLogger.error("Carbon shortcut registration failed shortcut=\(shortcut.rawValue, privacy: .public) status=\(status, privacy: .public) keyCode=\(binding.keyCode, privacy: .public)")
         }
     }
 
     private func handleHotKey(id: UInt32) {
         guard !ShortcutRecorderController.shared.isCapturing else { return }
+        selectionLogger.debug("global shortcut dispatched eventID=\(id, privacy: .public)")
         switch id {
         case 1:
-            // Synthetic Cmd+C must never re-enter selection translation. Keep
-            // only one extraction pending, and don't show a stale/empty card
-            // when there is no current selection.
-            guard !ignoreNextChangeCount, directTranslationTask == nil else { return }
+            // Keep only one extraction pending, and don't show a stale/empty
+            // card when there is no current selection.
+            guard directTranslationTask == nil else {
+                selectionLogger.debug("direct selection suppressed reason=request-already-running")
+                return
+            }
             let sourcePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
             directTranslationTask = Task { [weak self] in
                 guard let self else { return }
                 defer { self.directTranslationTask = nil }
-                guard let payload = await self.grabCurrentSelection(),
-                      !Task.isCancelled,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == sourcePID else { return }
+                guard let payload = await self.grabCurrentSelection() else {
+                    self.selectionLogger.info("direct selection action ended reason=no-payload")
+                    return
+                }
+                guard !Task.isCancelled,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == sourcePID else {
+                    self.selectionLogger.debug("direct selection action cancelled reason=task-or-foreground-changed")
+                    return
+                }
+                self.selectionLogger.info("direct selection action presented characters=\(payload.text.count, privacy: .public) sourceApp=\(payload.sourceApp, privacy: .private)")
                 self.onTriggerDirectTranslateCard?(payload)
             }
         case 2, 4:

@@ -2,7 +2,7 @@ import AppKit
 import Charts
 import SwiftUI
 
-public enum DashboardSection: String, CaseIterable, Identifiable {
+public enum DashboardSection: String, CaseIterable, Identifiable, Equatable, Sendable {
     case home
     case translations
     case screenshots
@@ -35,20 +35,34 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
 @MainActor
 public final class DashboardNavigation: ObservableObject {
     public static let shared = DashboardNavigation()
-    @Published public var selectedSection: DashboardSection = .home
+    @Published public var selectedSection: DashboardSection
+
+    public init(initialSection: DashboardSection = .home) {
+        selectedSection = initialSection
+    }
 
     public func select(_ section: DashboardSection) {
         guard selectedSection != section else { return }
         selectedSection = section
     }
-
-    private init() {}
 }
 
 public struct DashboardView: View {
-    @ObservedObject private var navigation = DashboardNavigation.shared
+    @ObservedObject private var navigation: DashboardNavigation
+    private let translationStore: TranslationHistoryStore
+    private let screenshotStore: ScreenshotHistoryStore
     @Environment(\.colorScheme) private var colorScheme
-    public init() {}
+
+    @MainActor
+    public init(
+        navigation: DashboardNavigation? = nil,
+        translationStore: TranslationHistoryStore? = nil,
+        screenshotStore: ScreenshotHistoryStore? = nil
+    ) {
+        _navigation = ObservedObject(wrappedValue: navigation ?? .shared)
+        self.translationStore = translationStore ?? .shared
+        self.screenshotStore = screenshotStore ?? .shared
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -102,11 +116,15 @@ public struct DashboardView: View {
             Group {
                 switch navigation.selectedSection {
                 case .home:
-                    DashboardHomeView()
+                    DashboardHomeView(
+                        navigation: navigation,
+                        translations: translationStore,
+                        screenshots: screenshotStore
+                    )
                 case .translations:
-                    TranslationHistoryView()
+                    TranslationHistoryView(store: translationStore)
                 case .screenshots:
-                    ScreenshotHistoryView()
+                    ScreenshotHistoryView(store: screenshotStore)
                 case .shortcuts:
                     SettingsView(section: .shortcuts)
                 case .preferences:
@@ -128,9 +146,16 @@ struct DashboardDayCount: Identifiable {
 }
 
 private struct DashboardHomeView: View {
-    @ObservedObject private var translations = TranslationHistoryStore.shared
-    @ObservedObject private var screenshots = ScreenshotHistoryStore.shared
+    @ObservedObject private var navigation: DashboardNavigation
+    @ObservedObject private var translations: TranslationHistoryStore
+    @ObservedObject private var screenshots: ScreenshotHistoryStore
     @Environment(\.colorScheme) private var colorScheme
+
+    init(navigation: DashboardNavigation, translations: TranslationHistoryStore, screenshots: ScreenshotHistoryStore) {
+        _navigation = ObservedObject(wrappedValue: navigation)
+        _translations = ObservedObject(wrappedValue: translations)
+        _screenshots = ObservedObject(wrappedValue: screenshots)
+    }
 
     private var todayEntries: [TranslationHistoryEntry] {
         let start = Calendar.current.startOfDay(for: Date())
@@ -240,19 +265,27 @@ private struct DashboardHomeView: View {
                             DashboardSectionTitle(title: L10n.string("最近截图"))
                             Spacer()
                             DashboardTextButton(title: L10n.string("查看全部")) {
-                                DashboardNavigation.shared.select(.screenshots)
+                                navigation.select(.screenshots)
                             }
                         }
                         if screenshots.records.isEmpty {
                             DashboardEmptyCard(title: L10n.string("还没有截图记录"), icon: "photo.on.rectangle")
                         } else {
-                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            LazyVGrid(
+                                columns: [
+                                    GridItem(.flexible(minimum: 0), spacing: 12),
+                                    GridItem(.flexible(minimum: 0), spacing: 12)
+                                ],
+                                spacing: 12
+                            ) {
                                 ForEach(Array(screenshots.records.prefix(4))) { record in
                                     DashboardScreenshotTile(record: record) {
                                         NSWorkspace.shared.open(record.fileURL)
                                     }
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .clipped()
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -262,7 +295,7 @@ private struct DashboardHomeView: View {
                             DashboardSectionTitle(title: L10n.string("今日高频词"))
                             Spacer()
                             DashboardTextButton(title: L10n.string("查看记录")) {
-                                DashboardNavigation.shared.select(.translations)
+                                navigation.select(.translations)
                             }
                         }
                         if topTerms.isEmpty {
@@ -298,7 +331,7 @@ private struct DashboardHomeView: View {
                         DashboardSectionTitle(title: L10n.string("最近翻译"))
                         Spacer()
                         DashboardTextButton(title: L10n.string("查看全部")) {
-                            DashboardNavigation.shared.select(.translations)
+                            navigation.select(.translations)
                         }
                     }
                     if todayEntries.isEmpty {
@@ -456,27 +489,45 @@ private struct DashboardScreenshotTile: View {
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 7) {
-                Group {
-                    if let image {
-                        Image(nsImage: image).resizable().scaledToFill()
-                    } else {
-                        Rectangle().fill(Color.primary.opacity(0.05))
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 104)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 9))
+                DashboardScreenshotPreview(image: image, height: 104)
                 Text(L10n.formattedDate(record.createdAt))
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
             .contentShape(RoundedRectangle(cornerRadius: 12))
+            .clipped()
         }
         .buttonStyle(.plain)
-        .task(id: record.id) { image = NSImage(contentsOf: record.fileURL) }
+        .task(id: record.id) {
+            image = await ScreenshotThumbnailLoader.load(for: record.fileURL)
+        }
+    }
+}
+
+/// Keeps dashboard thumbnails inside their grid cell even when the source
+/// screenshot is much larger or has a very different aspect ratio.
+struct DashboardScreenshotPreview: View {
+    let image: NSImage?
+    let height: CGFloat
+
+    var body: some View {
+        ZStack {
+            Color.primary.opacity(0.05)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(4)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 9))
     }
 }

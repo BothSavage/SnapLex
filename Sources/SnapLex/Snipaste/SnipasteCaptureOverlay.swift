@@ -147,6 +147,7 @@ public final class SnipasteCaptureManager: NSObject {
             detectedWindows: detectedWindows,
             openRecordingSubbar: openRecordingSubbar
         )
+        let sessionID = window.canvasView.sessionID
 
         // 3. Show the overlay window IMMEDIATELY (<1ms latency on F1!)
         // Because `screenshotLayer.contents` starts nil, the live desktop shines right through our
@@ -170,7 +171,8 @@ public final class SnipasteCaptureManager: NSObject {
                 return
             }
             DispatchQueue.main.async {
-                guard let self = self, self.isCapturing, let window = window else { return }
+                guard let self = self, self.isCapturing, let window = window,
+                      window.canvasView.sessionID == sessionID else { return }
                 window.canvasView.setCapturedCGImage(cgImage)
             }
         }
@@ -429,6 +431,7 @@ public final class SnipasteCaptureCanvasView: NSView {
     private var statusToastToken = UUID()
     private var isApplyingImageEffect = false
     private var isScanningBarcodes = false
+    private(set) var sessionID = UUID()
 
     // Floating SwiftUI toolbar subview (allocated once, reused across F1 sessions!)
     private var toolbarHostingView: NSHostingView<SnipasteToolbarSwiftUIView>?
@@ -468,6 +471,9 @@ public final class SnipasteCaptureCanvasView: NSView {
         detectedWindows: [DetectedWindowInfo],
         openRecordingSubbar: Bool = false
     ) {
+        sessionID = UUID()
+        isApplyingImageEffect = false
+        isScanningBarcodes = false
         self.frame = NSRect(origin: .zero, size: screenFrame.size)
         self.screenOrigin = screenFrame.origin
         if let vis = visibleFrame {
@@ -528,6 +534,9 @@ public final class SnipasteCaptureCanvasView: NSView {
     }
 
     public func clearSession() {
+        sessionID = UUID()
+        isApplyingImageEffect = false
+        isScanningBarcodes = false
         commitInlineTextIfNeeded()
         self.cgImage = nil
         self.backgroundLayerProvider()?.contents = nil
@@ -1061,7 +1070,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         // Draw directly with Core Text. NSAttributedString.draw(at:) routes
         // through AppKit's typesetter during every overlay redraw and has
         // crashed here with an NSInvalidArgumentException on macOS 26.
-        drawMagnifierHUDText(
+        MagnifierHUDTextRenderer.draw(
             colorCode,
             fontName: "Menlo-Bold",
             fontSize: 11,
@@ -1069,7 +1078,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             at: CGPoint(x: hx + 30, y: hy + infoHeight - 22),
             in: ctx
         )
-        drawMagnifierHUDText(
+        MagnifierHUDTextRenderer.draw(
             coordText,
             fontName: "Menlo",
             fontSize: 10,
@@ -1077,7 +1086,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             at: CGPoint(x: hx + 10, y: hy + infoHeight - 42),
             in: ctx
         )
-        drawMagnifierHUDText(
+        MagnifierHUDTextRenderer.draw(
             hintText,
             fontName: "HelveticaNeue-Medium",
             fontSize: 9.5,
@@ -1092,32 +1101,6 @@ public final class SnipasteCaptureCanvasView: NSView {
         ctx.strokePath()
 
         ctx.restoreGState()
-    }
-
-    private func drawMagnifierHUDText(
-        _ text: String,
-        fontName: String,
-        fontSize: CGFloat,
-        color: CGColor,
-        at point: CGPoint,
-        in context: CGContext
-    ) {
-        let font = CTFontCreateWithName(fontName as CFString, fontSize, nil)
-        let attributes: [CFString: Any] = [
-            kCTFontAttributeName: font,
-            kCTForegroundColorAttributeName: color
-        ]
-        guard let attributedString = CFAttributedStringCreate(
-            nil,
-            text as CFString,
-            attributes as CFDictionary
-        ) else { return }
-
-        let line = CTLineCreateWithAttributedString(attributedString)
-        context.saveGState()
-        context.textPosition = point
-        CTLineDraw(line, context)
-        context.restoreGState()
     }
 
     private func sampleRGB(at viewPoint: CGPoint) -> (Int, Int, Int, NSColor) {
@@ -1736,6 +1719,7 @@ public final class SnipasteCaptureCanvasView: NSView {
         case 8 where !flags.contains(.command): // 'C' -> Copy pixel color under cursor!
             let (r, g, b, _) = sampleRGB(at: mouseLocationInView)
             let code = colorFormat.format(r: r, g: g, b: b)
+            SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(code, forType: .string)
             showToast(L10n.format("🎨 已复制色值: %@", code))
@@ -1992,7 +1976,7 @@ public final class SnipasteCaptureCanvasView: NSView {
             width: targetRect.width,
             height: targetRect.height
         )
-        ScreenshotHistoryStore.shared.save(outputImage)
+        ScreenshotHistoryStore.shared.saveInBackground(outputImage)
         return (outputImage, screenRect)
     }
 
@@ -2039,15 +2023,18 @@ public final class SnipasteCaptureCanvasView: NSView {
         guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
         isApplyingImageEffect = true
         showToast(effect.progressMessage)
+        let sessionID = sessionID
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.isApplyingImageEffect = false }
+            defer { if self.sessionID == sessionID { self.isApplyingImageEffect = false } }
             do {
                 let processed = try await VisionImageEffectsService.shared.apply(effect, to: image)
+                guard self.sessionID == sessionID else { return }
                 self.onFinish()
                 SnipastePinManager.shared.pinImage(processed, at: screenRect)
             } catch {
+                guard self.sessionID == sessionID else { return }
                 self.showToast((error as? VisionImageEffectsError)?.errorDescription ?? L10n.string("无法生成图片效果。"))
             }
         }
@@ -2065,16 +2052,19 @@ public final class SnipasteCaptureCanvasView: NSView {
             guard !isScanningBarcodes else { return }
             isScanningBarcodes = true
             showToast(L10n.string("正在扫描二维码 / 条码…"))
+            let sessionID = sessionID
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                defer { self.isScanningBarcodes = false }
+                defer { if self.sessionID == sessionID { self.isScanningBarcodes = false } }
                 do {
                     let codes = try await VisionBarcodeScanningService.shared.scanBarcodes(in: image)
+                    guard self.sessionID == sessionID else { return }
                     guard !codes.isEmpty else {
                         self.showToast(L10n.string("没有识别到二维码或条码"))
                         return
                     }
                     let copyText = codes.map(\.payload).joined(separator: "\n")
+                    SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(copyText, forType: .string)
                     if codes.count == 1 {
@@ -2085,6 +2075,7 @@ public final class SnipasteCaptureCanvasView: NSView {
                         self.showToast(L10n.format("扫描到 %d 个码，内容已复制", codes.count))
                     }
                 } catch {
+                    guard self.sessionID == sessionID else { return }
                     self.showToast(L10n.string("无法读取这张图片。"))
                 }
             }
@@ -2137,6 +2128,7 @@ public final class SnipasteCaptureCanvasView: NSView {
 
     public func triggerCopyAction() {
         guard let (image, _) = renderCroppedAnnotatedImage() else { return }
+        SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([image])
         onFinish()

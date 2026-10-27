@@ -89,4 +89,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.value }}
-        run: gh release create "$GITHUB_REF_NAME" "$DMG_PATH" --title "SnapLex $RELEASE_VERSION" --generate-notes
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            ASSET_NAME="$(basename "$DMG_PATH")"
+            if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -Fxq -- "$ASSET_NAME"; then
+              echo "Release asset already exists: $ASSET_NAME"
+            else
+              gh release upload "$GITHUB_REF_NAME" "$DMG_PATH"
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" --title "SnapLex $RELEASE_VERSION" --generate-notes
+          fi

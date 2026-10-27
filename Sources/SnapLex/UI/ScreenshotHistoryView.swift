@@ -2,14 +2,17 @@ import AppKit
 import SwiftUI
 
 public struct ScreenshotHistoryView: View {
-    @ObservedObject private var store = ScreenshotHistoryStore.shared
+    @ObservedObject private var store: ScreenshotHistoryStore
     @ObservedObject private var settings = AppSettings.shared
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingClearConfirmation = false
 
     private let columns = [GridItem(.adaptive(minimum: 190, maximum: 260), spacing: 14)]
 
-    public init() {}
+    @MainActor
+    public init(store: ScreenshotHistoryStore? = nil) {
+        _store = ObservedObject(wrappedValue: store ?? .shared)
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -132,7 +135,7 @@ private struct ScreenshotHistoryTile: View {
                 .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.7)
         )
         .task(id: record.id) {
-            image = NSImage(contentsOf: record.fileURL)
+            image = await ScreenshotThumbnailLoader.load(for: record.fileURL)
         }
     }
 }

@@ -120,12 +120,6 @@ public struct SettingsView: View {
                                 .frame(width: 210, alignment: .trailing)
                                 .labelsHidden()
                                 .accessibilityLabel(L10n.string("翻译引擎"))
-                                .onChange(of: settings.translationEngine) { _, _ in
-                                    let translator = TranslatorViewModel.shared
-                                    if !translator.inputText.isEmpty {
-                                        translator.rerunCurrentInput()
-                                    }
-                                }
                             }
                         }
                         .background(
@@ -155,7 +149,7 @@ public struct SettingsView: View {
 
                             MonochromeToggleRow(
                                 title: L10n.string("双击 ⌘C 呼出划词控制栏"),
-                                subtitle: L10n.string("无需辅助功能权限，在任意应用中连续按两次 ⌘C 即可触发"),
+                                subtitle: L10n.string("需要辅助功能权限以安全识别输入框；连续按两次 ⌘C 呼出控制栏"),
                                 isOn: $settings.enableDoubleCmdC
                             )
 

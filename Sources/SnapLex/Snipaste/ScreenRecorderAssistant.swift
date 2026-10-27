@@ -7,6 +7,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import AVFoundation
 import QuartzCore
+import os
 
 public enum RecordingTargetMode: String, CaseIterable, Identifiable {
     case region = "区域"
@@ -71,7 +72,14 @@ public final class ScreenRecorderManager: ObservableObject {
     private var errorToastTask: Task<Void, Never>?
 
     private var clockTimer: Timer?
+    private var countdownTask: Task<Void, Never>?
+    private var pipelineStartupTask: Task<Bool, Never>?
     private var pipeline: ScreenCaptureRecordingPipeline?
+    private var isFinalizingRecording = false
+    private let recordingLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "SnapLex",
+        category: "ScreenRecording"
+    )
 
     private var targetScreenRect: CGRect = .zero
 
@@ -92,7 +100,17 @@ public final class ScreenRecorderManager: ObservableObject {
 
     /// Starts recording the specified `screenRect` directly from the screenshot sub-toolbar!
     public func startRecording(screenRect: CGRect) {
+        guard ScreenRecordingStartPolicy.canStart(
+            isCountingDown: isCountingDown,
+            isRecording: isRecording,
+            isFinalizing: isFinalizingRecording
+        ) else {
+            recordingLogger.info("recording start ignored reason=already-counting-recording-or-finalizing")
+            return
+        }
+
         self.targetScreenRect = screenRect
+        recordingLogger.info("recording start accepted width=\(Int(screenRect.width), privacy: .public) height=\(Int(screenRect.height), privacy: .public) countdown=\(self.countdownSeconds, privacy: .public)")
 
         showRegionGuideBorder(around: screenRect)
         showFloatingRecordingBar(near: screenRect)
@@ -101,10 +119,12 @@ public final class ScreenRecorderManager: ObservableObject {
             isCountingDown = true
             activeCountdownValue = countdownSeconds
             resizeFloatingRecordingBarToFit()
-            Task { @MainActor in
+            countdownTask?.cancel()
+            countdownTask = Task { @MainActor in
                 while self.activeCountdownValue > 0 && self.isCountingDown {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    if !self.isCountingDown { return }
+                    do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                    catch { return }
+                    guard !Task.isCancelled, self.isCountingDown else { return }
                     self.activeCountdownValue -= 1
                 }
                 if self.isCountingDown {
@@ -135,21 +155,28 @@ public final class ScreenRecorderManager: ObservableObject {
             recordKeystrokes: recordKeystrokes,
             outputURL: url
         )
-        pipeline.onVideoFrame = { [weak self] in
-            Task { @MainActor in self?.capturedFrameCount += 1 }
+        pipeline.onVideoFrame = { [weak self, weak pipeline] in
+            Task { @MainActor in
+                guard let self, let pipeline, self.pipeline === pipeline, self.isRecording else { return }
+                self.capturedFrameCount += 1
+            }
         }
-        pipeline.onFailure = { [weak self] message in
-            Task { @MainActor in self?.recordingFailed(message) }
+        pipeline.onFailure = { [weak self, weak pipeline] message in
+            Task { @MainActor in
+                guard let self, let pipeline, self.pipeline === pipeline else { return }
+                self.recordingFailed(message)
+            }
         }
         self.pipeline = pipeline
 
-        Task { @MainActor in
+        pipelineStartupTask = Task { @MainActor in
             do {
                 try await pipeline.start()
-                guard self.pipeline === pipeline, self.isRecording else {
+                guard self.pipeline === pipeline, self.isRecording || self.isFinalizingRecording else {
                     await pipeline.cancel()
-                    return
+                    return false
                 }
+                guard self.isRecording else { return true }
                 self.installInputOverlayMonitors()
                 self.clockTimer?.invalidate()
                 self.clockTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -158,8 +185,11 @@ public final class ScreenRecorderManager: ObservableObject {
                         self.elapsedSeconds += 1
                     }
                 }
+                return true
             } catch {
+                guard self.pipeline === pipeline else { return false }
                 self.recordingFailed(self.localizedRecordingError(error))
+                return false
             }
         }
     }
@@ -173,6 +203,8 @@ public final class ScreenRecorderManager: ObservableObject {
 
     public func dismissForEscape() {
         if isCountingDown {
+            countdownTask?.cancel()
+            countdownTask = nil
             isCountingDown = false
             cleanupRecordingWindows()
             return
@@ -190,24 +222,45 @@ public final class ScreenRecorderManager: ObservableObject {
     }
 
     public func stopRecordingAndPromptSave() {
+        countdownTask?.cancel()
+        countdownTask = nil
         isCountingDown = false
         guard isRecording else {
             cleanupRecordingWindows()
             return
         }
         isRecording = false
+        isFinalizingRecording = true
         clockTimer?.invalidate()
         clockTimer = nil
         removeInputOverlayMonitors()
         cleanupRecordingWindows()
-        guard let pipeline else { return }
-        self.pipeline = nil
+        guard let pipeline else {
+            isFinalizingRecording = false
+            return
+        }
+        let startupTask = pipelineStartupTask
         Task { @MainActor in
+            defer { self.isFinalizingRecording = false }
+            // A stop click can arrive while ScreenCaptureKit is still starting.
+            // Finish startup before touching its stream/writer from stop().
+            let started = await startupTask?.value ?? true
+            self.pipeline = nil
+            self.pipelineStartupTask = nil
+            guard started else {
+                await pipeline.cancel()
+                try? FileManager.default.removeItem(at: pipeline.outputURL)
+                return
+            }
             do {
                 try await pipeline.stop()
+                self.recordingLogger.info("recording finalized frames=\(self.capturedFrameCount, privacy: .public) result=ready-to-export")
                 self.promptExportDialog(recordingURL: pipeline.outputURL)
             } catch {
+                await pipeline.cancel()
                 try? FileManager.default.removeItem(at: pipeline.outputURL)
+                let nsError = error as NSError
+                self.recordingLogger.error("recording finalization failed domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public)")
                 self.showRecordingError(L10n.string("无法保存录屏文件，请检查存储空间后重试。"))
             }
         }
@@ -215,6 +268,8 @@ public final class ScreenRecorderManager: ObservableObject {
 
     private func recordingFailed(_ message: String) {
         guard isRecording || isCountingDown else { return }
+        countdownTask?.cancel()
+        countdownTask = nil
         isCountingDown = false
         isRecording = false
         isPaused = false
@@ -223,8 +278,11 @@ public final class ScreenRecorderManager: ObservableObject {
         removeInputOverlayMonitors()
         cleanupRecordingWindows()
         let failedPipeline = pipeline
+        let startupTask = pipelineStartupTask
         pipeline = nil
+        pipelineStartupTask = nil
         Task {
+            _ = await startupTask?.value
             await failedPipeline?.cancel()
             if let failedPipeline { try? FileManager.default.removeItem(at: failedPipeline.outputURL) }
         }

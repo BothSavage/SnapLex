@@ -110,11 +110,11 @@ final class GoogleTranslationServiceTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [GoogleTranslationURLProtocol.self]
         let service = GoogleTranslationService(session: URLSession(configuration: configuration))
-        let oldEngine = AppSettings.shared.translationEngine
-        AppSettings.shared.translationEngine = .google
-        defer { AppSettings.shared.translationEngine = oldEngine }
-
-        let viewModel = TranslatorViewModel(googleTranslationService: service)
+        let viewModel = TranslatorViewModel(
+            googleTranslationService: service,
+            translationEngineProvider: { .google },
+            historyRecorder: { _, _, _, _, _, _ in }
+        )
         viewModel.startTranslation(text: "Hello from SnapLex", overrideTargetLang: "简体中文")
         for _ in 0..<50 where viewModel.isTranslating {
             try await Task.sleep(nanoseconds: 20_000_000)

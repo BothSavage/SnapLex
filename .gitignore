@@ -27,3 +27,6 @@ dist/
 *.sqlite
 *.sqlite3
 *.db
+
+# Machine-specific local test recordings and diagnostic logs
+/docs/testing/runs/

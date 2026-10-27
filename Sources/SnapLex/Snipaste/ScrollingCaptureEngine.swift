@@ -40,6 +40,8 @@ public final class ScrollingCaptureEngine: ObservableObject {
     /// Tracks where the top of `lastFrameCGImage` sits inside `masterCGImage` (in pixels from top)
     private var currentViewportTopInMaster: Int = 0
     private var isProcessingFrame: Bool = false
+    private var captureGeneration = UUID()
+    private let stitchingQueue = DispatchQueue(label: "io.github.snaplex.scroll-stitching", qos: .userInitiated)
 
     private typealias CGWindowListCreateImageFunc = @convention(c) (
         CGRect,
@@ -243,7 +245,8 @@ public final class ScrollingCaptureEngine: ObservableObject {
         stopTimersAndWindows()
 
         guard let img = finalImg else { return }
-        ScreenshotHistoryStore.shared.save(img)
+        ScreenshotHistoryStore.shared.saveInBackground(img)
+        SelectionAndHotKeyManager.shared.noteInternalClipboardWrite()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([img])
 
@@ -269,6 +272,11 @@ public final class ScrollingCaptureEngine: ObservableObject {
 
     private func stopTimersAndWindows() {
         isCaptureActive = false
+        captureGeneration = UUID()
+        isProcessingFrame = false
+        masterCGImage = nil
+        lastFrameCGImage = nil
+        previewImage = nil
         isAutoScrolling = false
         capturePollingTimer?.invalidate()
         capturePollingTimer = nil
@@ -301,81 +309,96 @@ public final class ScrollingCaptureEngine: ObservableObject {
     // MARK: - Bidirectional (Up & Down) 2D Vision Phase Correlation + Full-Overlap Edge-Weighted Stitcher
 
     private func captureAndStitchSlice() {
-        guard !isProcessingFrame else { return }
-        guard let fn = windowListCreateImageFn else { return }
-        guard let slice = fn(targetQuartzRect, .optionOnScreenOnly, kCGNullWindowID, .bestResolution)?.takeRetainedValue(),
-              slice.width >= 64, slice.height >= 80 else {
-            return
-        }
-
+        guard isCaptureActive, !isProcessingFrame, let capture = windowListCreateImageFn else { return }
         isProcessingFrame = true
-        defer { isProcessingFrame = false }
-
-        // First frame initialization
-        guard let currentMaster = masterCGImage,
-              let prevSlice = lastFrameCGImage,
-              prevSlice.width == slice.width,
-              prevSlice.height == slice.height else {
-            masterCGImage = slice
-            lastFrameCGImage = slice
-            currentViewportTopInMaster = 0
-            stitchedPixelHeight = slice.height
-            stitchedFrameCount = 1
-            updatePreviewImage(from: slice)
-            return
-        }
-
-        // Find exact verified 2D scroll translation (supports both scrolling DOWN `signedDeltaRows > 0` and UP `signedDeltaRows < 0`)
-        guard let verifiedMatch = Self.findVerifiedBidirectional2DScrollMatch(prev: prevSlice, curr: slice) else {
-            return
-        }
-
-        let sliceH = slice.height
-        let signedDelta = verifiedMatch.signedDeltaRows
-        let seamRowInPrev = verifiedMatch.seamRowInPrev
-        let seamRowInNew = seamRowInPrev - signedDelta
-        let seamRowInMaster = currentViewportTopInMaster + seamRowInPrev
-        let newViewportTop = currentViewportTopInMaster + signedDelta
-
-        if newViewportTop + sliceH > currentMaster.height {
-            // Case 1: Viewport extended past the BOTTOM of `master` (scrolling down)
-            if let stitched = Self.stitchBottomExtension(
-                master: currentMaster,
-                newSlice: slice,
-                seamRowInMaster: seamRowInMaster,
-                seamRowInNew: seamRowInNew
-            ) {
-                masterCGImage = stitched
-                lastFrameCGImage = slice
-                currentViewportTopInMaster = newViewportTop
-                lastScrollWasUpward = false
-                stitchedPixelHeight = stitched.height
-                stitchedFrameCount += 1
-                updatePreviewImage(from: stitched)
-                statusHint = L10n.format("向下拼接 · 第 %d 段 (%d px)", stitchedFrameCount, stitched.height)
+        let generation = captureGeneration
+        let rect = targetQuartzRect
+        let master = masterCGImage
+        let previous = lastFrameCGImage
+        let viewportTop = currentViewportTopInMaster
+        stitchingQueue.async { [weak self] in
+            let result: SliceResult? = autoreleasepool {
+                guard let slice = capture(rect, .optionOnScreenOnly, kCGNullWindowID, .bestResolution)?.takeRetainedValue(),
+                      slice.width >= 64, slice.height >= 80 else { return nil }
+                return Self.processSlice(slice, master: master, previous: previous, viewportTop: viewportTop)
             }
+            DispatchQueue.main.async {
+                // A cancelled/restarted session must never publish old frames
+                // or clear the new session's in-flight flag.
+                guard let self, self.isCaptureActive, self.captureGeneration == generation else { return }
+                self.isProcessingFrame = false
+                guard let result else { return }
+                if result.reachedMemoryLimit {
+                    self.stopAutoScroll(reason: L10n.string("已达到长截图内存上限，请完成当前截图"))
+                    return
+                }
+                self.masterCGImage = result.master
+                self.lastFrameCGImage = result.lastFrame
+                self.currentViewportTopInMaster = result.viewportTop
+                if result.reset {
+                    self.stitchedFrameCount = 1
+                } else if result.extended {
+                    self.stitchedFrameCount += 1
+                    self.lastScrollWasUpward = result.upward
+                    self.statusHint = L10n.format(
+                        result.upward ? "向上拼接 · 第 %d 段 (%d px)" : "向下拼接 · 第 %d 段 (%d px)",
+                        self.stitchedFrameCount, result.master.height
+                    )
+                }
+                if result.reset || result.extended {
+                    self.stitchedPixelHeight = result.master.height
+                    self.updatePreviewImage(from: result.master)
+                }
+            }
+        }
+    }
+
+    struct SliceResult {
+        let master: CGImage
+        let lastFrame: CGImage
+        let viewportTop: Int
+        var reset = false
+        var extended = false
+        var upward = false
+        var reachedMemoryLimit = false
+    }
+
+    nonisolated static func canAllocateStitchedBitmap(width: Int, height: Int) -> Bool {
+        // Stitching retains the previous image while allocating the next one.
+        // A height limit alone permits gigabyte allocations on wide displays.
+        guard width > 0, height > 0, height <= 36_000 else { return false }
+        let (rowBytes, rowOverflow) = width.multipliedReportingOverflow(by: 4)
+        let (bytes, sizeOverflow) = rowBytes.multipliedReportingOverflow(by: height)
+        return !rowOverflow && !sizeOverflow && bytes <= 128 * 1024 * 1024
+    }
+
+    nonisolated static func processSlice(
+        _ slice: CGImage, master: CGImage?, previous: CGImage?, viewportTop: Int
+    ) -> SliceResult? {
+        guard let master, let previous,
+              previous.width == slice.width, previous.height == slice.height else {
+            return SliceResult(master: slice, lastFrame: slice, viewportTop: 0, reset: true)
+        }
+        guard let match = findVerifiedBidirectional2DScrollMatch(prev: previous, curr: slice) else { return nil }
+        let newViewportTop = viewportTop + match.signedDeltaRows
+        let seamInMaster = viewportTop + match.seamRowInPrev
+        let seamInNew = match.seamRowInPrev - match.signedDeltaRows
+        let targetHeight = newViewportTop < 0 ? master.height - newViewportTop : newViewportTop + slice.height
+        if targetHeight > master.height, !canAllocateStitchedBitmap(width: master.width, height: targetHeight) {
+            return SliceResult(master: master, lastFrame: previous, viewportTop: viewportTop, reachedMemoryLimit: true)
+        }
+        if newViewportTop + slice.height > master.height {
+            guard let stitched = stitchBottomExtension(
+                master: master, newSlice: slice, seamRowInMaster: seamInMaster, seamRowInNew: seamInNew
+            ) else { return nil }
+            return SliceResult(master: stitched, lastFrame: slice, viewportTop: newViewportTop, extended: true)
         } else if newViewportTop < 0 {
-            // Case 2: Viewport extended past the TOP of `master` (scrolling up!)
-            if let stitched = Self.stitchTopExtension(
-                master: currentMaster,
-                newSlice: slice,
-                seamRowInMaster: seamRowInMaster,
-                seamRowInNew: seamRowInNew
-            ) {
-                masterCGImage = stitched
-                lastFrameCGImage = slice
-                currentViewportTopInMaster = 0
-                lastScrollWasUpward = true
-                stitchedPixelHeight = stitched.height
-                stitchedFrameCount += 1
-                updatePreviewImage(from: stitched)
-                statusHint = L10n.format("向上拼接 · 第 %d 段 (%d px)", stitchedFrameCount, stitched.height)
-            }
-        } else {
-            // Case 3: Viewport moved within already-captured territory of `master` -> track position without duplicating!
-            lastFrameCGImage = slice
-            currentViewportTopInMaster = newViewportTop
+            guard let stitched = stitchTopExtension(
+                master: master, newSlice: slice, seamRowInMaster: seamInMaster, seamRowInNew: seamInNew
+            ) else { return nil }
+            return SliceResult(master: stitched, lastFrame: slice, viewportTop: 0, extended: true, upward: true)
         }
+        return SliceResult(master: master, lastFrame: slice, viewportTop: newViewportTop)
     }
 
     private func updatePreviewImage(from master: CGImage) {
@@ -393,7 +416,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
     /// Combines Apple Vision 2D Phase Correlation (`VNTranslationalImageRegistrationRequest`)
     /// with Full-Overlap Active-Edge Verification (ignoring uniform background pixels so white pages never false-match)
     /// and selects the lowest-gradient whitespace row for an invisible seam.
-    private static func findVerifiedBidirectional2DScrollMatch(
+    private nonisolated static func findVerifiedBidirectional2DScrollMatch(
         prev: CGImage,
         curr: CGImage
     ) -> VerifiedBidirectionalMatch? {
@@ -438,6 +461,8 @@ public final class ScrollingCaptureEngine: ObservableObject {
             }
 
             let tx = obs.alignmentTransform.tx
+            guard tx.isFinite, obs.alignmentTransform.ty.isFinite,
+                  abs(obs.alignmentTransform.ty) <= CGFloat(h) else { continue }
             let rawSignedDelta = Int(round(-obs.alignmentTransform.ty))
             let absDelta = abs(rawSignedDelta)
 
@@ -513,7 +538,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
     /// Evaluates the ENTIRE overlapping region between `prev` and `curr` (excluding top/bottom sticky margins),
     /// computing MAD specifically on active edge/text pixels so uniform white/black backgrounds never dilute the score,
     /// and finds the lowest-energy whitespace row for a clean seam cut.
-    private static func evaluateFullOverlapAlignment(
+    private nonisolated static func evaluateFullOverlapAlignment(
         prev: CGImage,
         curr: CGImage,
         cropX: Int,
@@ -546,11 +571,9 @@ public final class ScrollingCaptureEngine: ObservableObject {
         let rows = min(96, max(36, overlapH / 2))
         let count = cols * rows
         let cs = CGColorSpaceCreateDeviceGray()
-        var buf1 = [UInt8](repeating: 0, count: count)
-        var buf2 = [UInt8](repeating: 0, count: count)
 
         guard let ctx1 = CGContext(
-            data: &buf1,
+            data: nil,
             width: cols,
             height: rows,
             bitsPerComponent: 8,
@@ -559,7 +582,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
             bitmapInfo: CGImageAlphaInfo.none.rawValue
         ),
         let ctx2 = CGContext(
-            data: &buf2,
+            data: nil,
             width: cols,
             height: rows,
             bitsPerComponent: 8,
@@ -575,6 +598,12 @@ public final class ScrollingCaptureEngine: ObservableObject {
         ctx1.draw(pSub, in: CGRect(x: 0, y: 0, width: cols, height: rows))
         ctx2.draw(cSub, in: CGRect(x: 0, y: 0, width: cols, height: rows))
 
+        // CGContext owns these buffers for the entire draw/read lifetime.
+        // Passing &Array to its initializer only borrows storage for that call.
+        guard let buf1 = ctx1.data?.assumingMemoryBound(to: UInt8.self),
+              let buf2 = ctx2.data?.assumingMemoryBound(to: UInt8.self) else {
+            return OverlapEvaluation(overallMAD: 999, edgeMAD: 999, cleanestSeamRowInPrev: h / 2)
+        }
         var totalDiff: Int = 0
         var edgeDiffSum: Int = 0
         var edgePixelCount: Int = 0
@@ -586,18 +615,20 @@ public final class ScrollingCaptureEngine: ObservableObject {
         var lowestRowEnergy = Int.max
 
         for r in 0..<rows {
-            let rowBase = r * cols
+            let rowBase1 = r * ctx1.bytesPerRow
+            let rowBase2 = r * ctx2.bytesPerRow
             var rowEnergy: Int = 0
             for c in 0..<cols {
-                let idx = rowBase + c
-                let v1 = Int(buf1[idx])
-                let v2 = Int(buf2[idx])
+                let idx1 = rowBase1 + c
+                let idx2 = rowBase2 + c
+                let v1 = Int(buf1[idx1])
+                let v2 = Int(buf2[idx2])
                 let diff = abs(v1 - v2)
                 totalDiff += diff
 
                 if c > 0 {
-                    let g1 = abs(v1 - Int(buf1[idx - 1]))
-                    let g2 = abs(v2 - Int(buf2[idx - 1]))
+                    let g1 = abs(v1 - Int(buf1[idx1 - 1]))
+                    let g2 = abs(v2 - Int(buf2[idx2 - 1]))
                     let maxG = max(g1, g2)
                     rowEnergy += maxG + diff * 2
                     if maxG >= 8 {
@@ -635,7 +666,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
     }
 
     /// Appends the bottom portion of `newSlice` (`seamRowInNew ..< sliceH`) onto the bottom of `master[0 ..< seamRowInMaster]`
-    private static func stitchBottomExtension(
+    private nonisolated static func stitchBottomExtension(
         master: CGImage,
         newSlice: CGImage,
         seamRowInMaster: Int,
@@ -651,7 +682,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
               seamRowInNew >= 0,
               newSliceTakeH >= 16,
               totalHeight > master.height,
-              totalHeight <= 36_000 else {
+              canAllocateStitchedBitmap(width: w, height: totalHeight) else {
             return nil
         }
 
@@ -679,7 +710,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
     }
 
     /// Prepends the top portion of `newSlice` (`0 ..< seamRowInNew`) onto the top of `master[seamRowInMaster ..< master.height]`
-    private static func stitchTopExtension(
+    private nonisolated static func stitchTopExtension(
         master: CGImage,
         newSlice: CGImage,
         seamRowInMaster: Int,
@@ -694,7 +725,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
               seamRowInMaster >= 0,
               masterKeepH >= 16,
               totalHeight > master.height,
-              totalHeight <= 36_000 else {
+              canAllocateStitchedBitmap(width: w, height: totalHeight) else {
             return nil
         }
 

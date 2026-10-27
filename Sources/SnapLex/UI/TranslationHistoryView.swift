@@ -1,49 +1,6 @@
 import Charts
 import SwiftUI
 
-private enum TranslationHistoryPeriod: String, CaseIterable, Identifiable {
-    case today
-    case last7Days
-    case lastMonth
-    case last30Days
-
-    var id: String { rawValue }
-
-    var titleKey: String {
-        switch self {
-        case .today: return "今日"
-        case .last7Days: return "近 7 天"
-        case .lastMonth: return "近一月"
-        case .last30Days: return "近 30 天"
-        }
-    }
-
-    func includes(_ date: Date, now: Date = Date()) -> Bool {
-        let calendar = Calendar.current
-        let start: Date
-        switch self {
-        case .today:
-            start = calendar.startOfDay(for: now)
-        case .last7Days:
-            start = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)) ?? now
-        case .lastMonth:
-            start = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-        case .last30Days:
-            start = calendar.date(byAdding: .day, value: -29, to: calendar.startOfDay(for: now)) ?? now
-        }
-        return date >= start && date <= now
-    }
-
-    var numberOfDays: Int {
-        switch self {
-        case .today: return 1
-        case .last7Days: return 7
-        case .lastMonth: return 31
-        case .last30Days: return 30
-        }
-    }
-}
-
 private enum TranslationHistoryMode: String, CaseIterable, Identifiable {
     case terms
     case records
@@ -59,7 +16,7 @@ private struct TranslationHistoryDay: Identifiable {
 }
 
 public struct TranslationHistoryView: View {
-    @ObservedObject private var store = TranslationHistoryStore.shared
+    @ObservedObject private var store: TranslationHistoryStore
     @Environment(\.colorScheme) private var colorScheme
     @State private var period: TranslationHistoryPeriod = .today
     @State private var mode: TranslationHistoryMode = .terms
@@ -67,7 +24,9 @@ public struct TranslationHistoryView: View {
     @State private var showingClearConfirmation = false
 
     private var filteredEntries: [TranslationHistoryEntry] {
-        store.entries.filter { period.includes($0.createdAt) }
+        let now = Date()
+        let calendar = Calendar.current
+        return store.entries.filter { period.includes($0.createdAt, now: now, calendar: calendar) }
     }
 
     private var termStatistics: [TranslationTermStatistic] {
@@ -77,17 +36,16 @@ public struct TranslationHistoryView: View {
     private var dailyCounts: [TranslationHistoryDay] {
         let calendar = Calendar.current
         let now = Date()
-        let today = calendar.startOfDay(for: now)
         let entriesByDay = Dictionary(grouping: filteredEntries) { calendar.startOfDay(for: $0.createdAt) }
-        return (0..<period.numberOfDays).compactMap { offset in
-            guard let date = calendar.date(byAdding: .day, value: -(period.numberOfDays - offset - 1), to: today) else {
-                return nil
-            }
-            return TranslationHistoryDay(day: date, count: entriesByDay[date]?.count ?? 0)
+        return period.days(now: now, calendar: calendar).map { date in
+            TranslationHistoryDay(day: date, count: entriesByDay[date]?.count ?? 0)
         }
     }
 
-    public init() {}
+    @MainActor
+    public init(store: TranslationHistoryStore? = nil) {
+        _store = ObservedObject(wrappedValue: store ?? .shared)
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -139,7 +97,7 @@ public struct TranslationHistoryView: View {
                     .cornerRadius(3)
                 }
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: min(7, period.numberOfDays))) { value in
+                    AxisMarks(values: .automatic(desiredCount: min(7, period.numberOfDays(now: Date(), calendar: Calendar.current)))) { value in
                         AxisValueLabel(format: .dateTime.month(.abbreviated).day().locale(L10n.locale))
                     }
                 }
