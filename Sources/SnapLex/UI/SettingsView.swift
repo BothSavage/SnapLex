@@ -269,6 +269,7 @@ public struct SettingsView: View {
                                 .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.8)
                         )
                         }
+                        .onDisappear { shortcutRecorder.cancelCapture() }
                     }
 
                     if section == .all || section == .preferences {
@@ -342,7 +343,7 @@ public struct SettingsView: View {
                                     .disabled(releaseUpdateChecker.state == .checking)
                                 }
 
-                                if case let .updateAvailable(version, notes, releaseURL) = releaseUpdateChecker.state {
+                                if case let .updateAvailable(version, notes, releaseURL, downloadURL) = releaseUpdateChecker.state {
                                     VStack(alignment: .leading, spacing: 8) {
                                         Text(L10n.format("发现新版本 %@", version))
                                             .font(.system(size: 12, weight: .semibold))
@@ -353,10 +354,20 @@ public struct SettingsView: View {
                                                 .lineLimit(6)
                                                 .textSelection(.enabled)
                                         }
-                                        Link(destination: releaseURL) {
-                                            Label(L10n.string("查看 GitHub 发布页面"), systemImage: "arrow.up.right.square")
+                                        if let downloadURL {
+                                            Link(destination: downloadURL) {
+                                                Label(L10n.string("下载安装包"), systemImage: "arrow.down.circle")
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            Text(L10n.string("将通过浏览器下载安装包"))
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(.secondary)
+                                        } else {
+                                            Link(destination: releaseURL) {
+                                                Label(L10n.string("查看 GitHub 发布页面"), systemImage: "arrow.up.right.square")
+                                            }
+                                            .font(.system(size: 11.5, weight: .medium))
                                         }
-                                        .font(.system(size: 11.5, weight: .medium))
                                     }
                                     .padding(10)
                                     .frame(maxWidth: .infinity, alignment: .leading)

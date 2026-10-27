@@ -27,7 +27,33 @@ jobs:
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
           echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
 
+      - name: Check publishing credentials
+        id: credentials
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_APPLICATION_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          present=0
+          for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -n "${!name}" ]]; then present=$((present + 1)); fi
+          done
+          if [[ "$present" -eq 0 ]]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "No signing credentials configured; publish an unnotarized DMG manually."
+          elif [[ "$present" -eq 6 ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Signing credentials are incomplete; configure all six secrets or remove them for manual publishing." >&2
+            exit 1
+          fi
+
       - name: Import Developer ID certificate
+        if: steps.credentials.outputs.configured == 'true'
         env:
           CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -55,12 +81,14 @@ jobs:
           rm -f "$CERTIFICATE_PATH"
 
       - name: Build and package app
+        if: steps.credentials.outputs.configured == 'true'
         env:
           SNAPLEX_VERSION: ${{ steps.version.outputs.value }}
           SNAPLEX_BUILD_NUMBER: ${{ github.run_number }}
         run: ./scripts/build_app.sh
 
       - name: Create and notarize disk image
+        if: steps.credentials.outputs.configured == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -86,6 +114,7 @@ jobs:
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
+        if: steps.credentials.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.value }}

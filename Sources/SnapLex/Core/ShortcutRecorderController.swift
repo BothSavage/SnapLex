@@ -9,6 +9,7 @@ public final class ShortcutRecorderController: ObservableObject {
     @Published public private(set) var errorMessage: String?
 
     private var eventMonitor: Any?
+    private var resignActiveObserver: NSObjectProtocol?
 
     public var isCapturing: Bool { activeShortcut != nil }
 
@@ -18,18 +19,28 @@ public final class ShortcutRecorderController: ObservableObject {
         stopMonitor()
         errorMessage = nil
         activeShortcut = shortcut
+        SelectionAndHotKeyManager.shared.suspendHotKeysForRecording()
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             Task { @MainActor in
                 self?.handle(event)
             }
             return nil
         }
+        resignActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.cancelCapture() }
+        }
     }
 
     public func cancelCapture() {
+        let wasCapturing = isCapturing
         activeShortcut = nil
         errorMessage = nil
         stopMonitor()
+        if wasCapturing {
+            SelectionAndHotKeyManager.shared.refreshHotKeys()
+        }
     }
 
     private func handle(_ event: NSEvent) {
@@ -67,15 +78,17 @@ public final class ShortcutRecorderController: ObservableObject {
         }
 
         AppSettings.shared.setShortcutBinding(binding, for: shortcut)
-        activeShortcut = nil
-        errorMessage = nil
-        stopMonitor()
+        cancelCapture()
     }
 
     private func stopMonitor() {
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
             self.eventMonitor = nil
+        }
+        if let resignActiveObserver {
+            NotificationCenter.default.removeObserver(resignActiveObserver)
+            self.resignActiveObserver = nil
         }
     }
 

@@ -125,21 +125,33 @@ public final class GitHubReleaseUpdateService: ObservableObject {
         case checking
         case upToDate
         case noRelease
-        case updateAvailable(version: String, notes: String, releaseURL: URL)
+        case updateAvailable(version: String, notes: String, releaseURL: URL, downloadURL: URL?)
         case failed(String)
     }
 
     @Published public private(set) var state: State = .idle
 
     private struct Release: Decodable {
+        struct Asset: Decodable {
+            let name: String
+            let browserDownloadURL: URL
+
+            enum CodingKeys: String, CodingKey {
+                case name
+                case browserDownloadURL = "browser_download_url"
+            }
+        }
+
         let tagName: String
         let htmlURL: URL
         let body: String?
+        let assets: [Asset]?
 
         enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
             case htmlURL = "html_url"
             case body
+            case assets
         }
     }
 
@@ -147,6 +159,33 @@ public final class GitHubReleaseUpdateService: ObservableObject {
     private let repository = "SnapLex"
     private let session: URLSession
     private let currentVersionOverride: String?
+
+    private var architecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
+    }
+
+    private func downloadURL(for release: Release, version: GitHubReleaseVersion) -> URL? {
+        let base = "SnapLex-\(version.normalized)-macOS-\(architecture)"
+        // Prefer a notarized package when both it and an unnotarized package exist.
+        for name in ["\(base).dmg", "\(base)-unnotarized.dmg"] {
+            guard let asset = release.assets?.first(where: { $0.name == name }) else { continue }
+            let url = asset.browserDownloadURL
+            guard url.scheme == "https", url.host == "github.com",
+                  url.user == nil, url.password == nil, url.port == nil,
+                  url.query == nil, url.fragment == nil,
+                  url.path == "/\(owner)/\(repository)/releases/download/\(release.tagName)/\(name)" else {
+                continue
+            }
+            return url
+        }
+        return nil
+    }
 
     init(session: URLSession = .shared, currentVersion: String? = nil) {
         self.session = session
@@ -156,7 +195,7 @@ public final class GitHubReleaseUpdateService: ObservableObject {
     public var currentVersion: String {
         currentVersionOverride
             ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-            ?? "1.0.1"
+            ?? "1.0.2"
     }
 
     public func checkForUpdates() async {
@@ -197,7 +236,8 @@ public final class GitHubReleaseUpdateService: ObservableObject {
                 state = .updateAvailable(
                     version: version.normalized,
                     notes: release.body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                    releaseURL: release.htmlURL
+                    releaseURL: release.htmlURL,
+                    downloadURL: downloadURL(for: release, version: version)
                 )
             } else {
                 state = .upToDate

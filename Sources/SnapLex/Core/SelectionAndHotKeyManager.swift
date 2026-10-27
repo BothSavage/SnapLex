@@ -707,7 +707,12 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     }
 
     public func refreshHotKeys() {
+        guard !ShortcutRecorderController.shared.isCapturing else { return }
         registerCarbonHotKeys()
+    }
+
+    func suspendHotKeysForRecording() {
+        unregisterCarbonHotKeys()
     }
 
     private func unregisterCarbonHotKeys() {

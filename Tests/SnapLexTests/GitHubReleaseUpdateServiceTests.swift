@@ -76,14 +76,92 @@ final class GitHubReleaseUpdateServiceTests: XCTestCase {
 
         await service.checkForUpdates()
 
-        guard case let .updateAvailable(version, notes, releaseURL) = service.state else {
+        guard case let .updateAvailable(version, notes, releaseURL, downloadURL) = service.state else {
             return XCTFail("Expected an update to be available, received \(service.state)")
         }
         XCTAssertEqual(version, "0.2.0")
         XCTAssertEqual(notes, "Faster capture\n\nBug fixes")
         XCTAssertEqual(releaseURL.absoluteString, "https://github.com/BothSavage/SnapLex/releases/tag/v0.2.0")
+        XCTAssertNil(downloadURL)
         XCTAssertEqual(GitHubReleaseURLProtocol.lastRequest?.url?.path, "/repos/BothSavage/SnapLex/releases/latest")
         XCTAssertEqual(GitHubReleaseURLProtocol.lastRequest?.value(forHTTPHeaderField: "Accept"), "application/vnd.github+json")
+    }
+
+    func testUpdateSelectsCompatibleInstallerAndPrefersSignedPackage() async throws {
+        #if arch(arm64)
+        let architecture = "arm64"
+        #else
+        let architecture = "x86_64"
+        #endif
+        let base = "SnapLex-1.0.1-macOS-\(architecture)"
+        let prefix = "https://github.com/BothSavage/SnapLex/releases/download/v1.0.1/"
+        GitHubReleaseURLProtocol.handler = { request in
+            try Self.response(for: request, status: 200, payload: [
+                "tag_name": "v1.0.1",
+                "html_url": "https://github.com/BothSavage/SnapLex/releases/tag/v1.0.1",
+                "assets": [
+                    ["name": "\(base)-unnotarized.dmg", "browser_download_url": prefix + "\(base)-unnotarized.dmg"],
+                    ["name": "\(base).dmg", "browser_download_url": prefix + "\(base).dmg"]
+                ]
+            ])
+        }
+        let service = Self.makeService(currentVersion: "0.1.0")
+        await service.checkForUpdates()
+        guard case let .updateAvailable(_, _, _, downloadURL) = service.state else {
+            return XCTFail("Expected an available update")
+        }
+        XCTAssertEqual(downloadURL?.absoluteString, prefix + "\(base).dmg")
+    }
+
+    func testUpdateSelectsUnnotarizedInstallerWhenItIsTheOnlyCompatiblePackage() async throws {
+        #if arch(arm64)
+        let architecture = "arm64"
+        #else
+        let architecture = "x86_64"
+        #endif
+        let name = "SnapLex-1.0.1-macOS-\(architecture)-unnotarized.dmg"
+        let download = "https://github.com/BothSavage/SnapLex/releases/download/v1.0.1/\(name)"
+        GitHubReleaseURLProtocol.handler = { request in
+            try Self.response(for: request, status: 200, payload: [
+                "tag_name": "v1.0.1",
+                "html_url": "https://github.com/BothSavage/SnapLex/releases/tag/v1.0.1",
+                "assets": [["name": name, "browser_download_url": download]]
+            ])
+        }
+        let service = Self.makeService(currentVersion: "0.1.0")
+        await service.checkForUpdates()
+        guard case let .updateAvailable(_, _, _, downloadURL) = service.state else {
+            return XCTFail("Expected an available update")
+        }
+        XCTAssertEqual(downloadURL?.absoluteString, download)
+    }
+
+    func testUpdateDoesNotOfferMismatchedOrUntrustedInstaller() async throws {
+        #if arch(arm64)
+        let architecture = "arm64"
+        let otherArchitecture = "x86_64"
+        #else
+        let architecture = "x86_64"
+        let otherArchitecture = "arm64"
+        #endif
+        let name = "SnapLex-1.0.1-macOS-\(architecture).dmg"
+        let otherName = "SnapLex-1.0.1-macOS-\(otherArchitecture).dmg"
+        GitHubReleaseURLProtocol.handler = { request in
+            try Self.response(for: request, status: 200, payload: [
+                "tag_name": "v1.0.1",
+                "html_url": "https://github.com/BothSavage/SnapLex/releases/tag/v1.0.1",
+                "assets": [
+                    ["name": name, "browser_download_url": "https://example.com/\(name)"],
+                    ["name": otherName, "browser_download_url": "https://github.com/BothSavage/SnapLex/releases/download/v1.0.1/\(otherName)"]
+                ]
+            ])
+        }
+        let service = Self.makeService(currentVersion: "0.1.0")
+        await service.checkForUpdates()
+        guard case let .updateAvailable(_, _, _, downloadURL) = service.state else {
+            return XCTFail("Expected an available update")
+        }
+        XCTAssertNil(downloadURL)
     }
 
     func testUpdateCheckReportsNoReleaseWhenGitHubHasNoPublishedRelease() async throws {
