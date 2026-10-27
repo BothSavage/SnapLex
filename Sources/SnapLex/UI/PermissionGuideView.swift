@@ -7,6 +7,8 @@ final class PermissionGuideWindow: NSObject, NSWindowDelegate {
     static let shared = PermissionGuideWindow()
     private var window: NSWindow?
     private var refreshTimer: Timer?
+    private var preservingSession = false
+    var isVisible: Bool { window?.isVisible == true }
 
     func show(focusing permission: SnapLexPermission? = nil) {
         PermissionCoordinator.shared.guideReason = permission
@@ -50,10 +52,16 @@ final class PermissionGuideWindow: NSObject, NSWindowDelegate {
 
     func close() {
         stopRefreshing()
+        PermissionGuideSession.shared.finish()
         window?.orderOut(nil)
     }
 
-    func windowWillClose(_ notification: Notification) { stopRefreshing() }
+    func preserveSessionForTermination() { preservingSession = true }
+
+    func windowWillClose(_ notification: Notification) {
+        stopRefreshing()
+        if !preservingSession { PermissionGuideSession.shared.finish() }
+    }
 
     private func stopRefreshing() {
         refreshTimer?.invalidate()
@@ -111,6 +119,7 @@ struct PermissionGuideView: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                     Spacer()
                     Button(L10n.string("重启 SnapLex")) {
+                        PermissionGuideSession.shared.begin()
                         (NSApp.delegate as? AppDelegate)?.restartApp()
                     }
                     .buttonStyle(.plain)

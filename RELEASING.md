@@ -31,7 +31,7 @@ Sparkle 私钥当前存放在本机钥匙串，账号名为 `io.github.snaplex.u
 
 1. 完成上述签名身份配置，并确认 `SPARKLE_EDDSA_PRIVATE_KEY` 已添加。
 2. 将代码推送到 `main`，确认 `macOS CI` 检查通过。
-3. 创建并推送三段式版本 tag，例如 `v1.0.8`。
+3. 创建并推送三段式版本 tag，例如 `v1.0.9`。
 4. GitHub Actions 使用固定自签名证书签署应用，构建未经公证的 DMG，生成经 Sparkle 签名的 `appcast.xml`，再创建正式 Release。
 5. 用户按 [安装提示](docs/release-installation.md) 首次打开应用；之后可通过应用内更新安装新版。
 

@@ -203,7 +203,7 @@ public final class GitHubReleaseUpdateService: ObservableObject {
     public var currentVersion: String {
         currentVersionOverride
             ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-            ?? "1.0.8"
+            ?? "1.0.9"
     }
 
     public func checkForUpdates() async {

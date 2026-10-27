@@ -14,6 +14,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var explicitQuitRequested = false
     private var instanceLock: SingleInstanceLock?
     private var activationObserver: NSObjectProtocol?
+    private var startupPermissionScanComplete = false
+    private var reopenAfterPermissionScan = false
     private static let activationNotification = Notification.Name("io.github.snaplex.activate-existing-instance")
 
     public static func main() {
@@ -34,9 +36,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: activationNotification, object: nil, queue: .main
         ) { [weak delegate] _ in
             Task { @MainActor in
-                guard delegate?.instanceLock != nil else { return }
-                WindowManager.shared.showDashboard()
-                NSApp.activate(ignoringOtherApps: true)
+                guard let delegate, delegate.instanceLock != nil else { return }
+                delegate.handleReopenRequest()
             }
         }
         do {
@@ -103,18 +104,38 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         SelectionAndHotKeyManager.shared.start()
         CaptureManager.shared.prewarm()
         PermissionCoordinator.shared.refresh { snapshot in
+            self.startupPermissionScanComplete = true
             let deferred = UserDefaults.standard.bool(forKey: "SnapLex.permissionGuideOptionalDeferred")
-            if snapshot.shouldPresentAtStartup(optionalDeferred: deferred) {
+            if PermissionGuideSession.shared.isPending || snapshot.shouldPresentAtStartup(optionalDeferred: deferred) {
+                self.reopenAfterPermissionScan = false
                 PermissionGuideWindow.shared.show()
+            } else if self.reopenAfterPermissionScan {
+                self.reopenAfterPermissionScan = false
+                WindowManager.shared.showDashboard()
             }
         }
     }
 
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows {
-            WindowManager.shared.showDashboard()
+            handleReopenRequest()
         }
         return true
+    }
+
+    private func handleReopenRequest() {
+        switch AppReopenTarget.resolve(
+            guideVisible: PermissionGuideWindow.shared.isVisible,
+            permissionSessionPending: PermissionGuideSession.shared.isPending,
+            startupScanComplete: startupPermissionScanComplete
+        ) {
+        case .permissionGuide:
+            PermissionGuideWindow.shared.show()
+        case .waitForPermissionScan:
+            reopenAfterPermissionScan = true
+        case .dashboard:
+            WindowManager.shared.showDashboard()
+        }
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -122,6 +143,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if PermissionGuideSession.shared.isPending {
+            PermissionGuideWindow.shared.preserveSessionForTermination()
+            return .terminateNow
+        }
         guard !explicitQuitRequested else { return .terminateNow }
         WindowManager.shared.hideDashboard()
         return .terminateCancel

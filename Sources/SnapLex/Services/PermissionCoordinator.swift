@@ -85,6 +85,7 @@ final class PermissionCoordinator: ObservableObject {
     @Published var guideReason: SnapLexPermission?
     private var refreshTask: Task<Void, Never>?
     private var refreshCallbacks: [(PermissionSnapshot) -> Void] = []
+    private var refreshAgain = false
     private let readPermissions: @Sendable () -> PermissionSnapshot
 
     init(readPermissions: @escaping @Sendable () -> PermissionSnapshot = { PermissionCoordinator.readSnapshot() },
@@ -118,7 +119,10 @@ final class PermissionCoordinator: ObservableObject {
 
     func refresh(onComplete: ((PermissionSnapshot) -> Void)? = nil) {
         if let onComplete { refreshCallbacks.append(onComplete) }
-        guard refreshTask == nil else { return }
+        guard refreshTask == nil else {
+            refreshAgain = true
+            return
+        }
         let readPermissions = self.readPermissions
         refreshTask = Task { [weak self] in
             let current = await Task.detached(priority: .utility) { readPermissions() }.value
@@ -127,13 +131,17 @@ final class PermissionCoordinator: ObservableObject {
             self.refreshTask = nil
             let callbacks = self.refreshCallbacks
             self.refreshCallbacks.removeAll()
+            let needsAnotherScan = self.refreshAgain
+            self.refreshAgain = false
             callbacks.forEach { $0(current) }
+            if needsAnotherScan { self.refresh() }
         }
     }
 
     func request(_ permission: SnapLexPermission) {
         guard requesting == nil, snapshot[permission] != .restricted else { return }
         if snapshot[permission] == .granted { return }
+        PermissionGuideSession.shared.begin()
         requesting = permission
         Task { [weak self] in
             switch permission {
