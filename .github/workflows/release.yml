@@ -60,32 +60,27 @@ jobs:
           KEYCHAIN_PASSWORD="$(uuidgen)"
           CERTIFICATE_PATH="$RUNNER_TEMP/snaplex-signing.p12"
           CERTIFICATE_PEM_PATH="$RUNNER_TEMP/snaplex-signing.pem"
-          CERTIFICATE_DER_PATH="$RUNNER_TEMP/snaplex-signing.cer"
           printf '%s' "$CERTIFICATE_BASE64" | base64 -D > "$CERTIFICATE_PATH"
           openssl pkcs12 -in "$CERTIFICATE_PATH" -clcerts -nokeys \
             -passin env:CERTIFICATE_PASSWORD -out "$CERTIFICATE_PEM_PATH"
-          openssl x509 -in "$CERTIFICATE_PEM_PATH" -outform DER -out "$CERTIFICATE_DER_PATH"
+          ACTUAL_CERT_SHA1="$(openssl x509 -in "$CERTIFICATE_PEM_PATH" -noout -fingerprint -sha1 | sed -E 's/^[^=]+=//; s/://g' | tr '[:lower:]' '[:upper:]')"
+          if [[ "$ACTUAL_CERT_SHA1" != "$EXPECTED_CERT_SHA1" ]]; then
+            echo "P12 certificate fingerprint does not match SNAPLEX_SIGNING_CERT_SHA1." >&2
+            exit 1
+          fi
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN_PATH" "$CERTIFICATE_DER_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" "$HOME/Library/Keychains/login.keychain-db"
-
-          IDENTITY_LINE="$(security find-identity -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$SIGNING_IDENTITY\"" | head -n 1 || true)"
-          ACTUAL_CERT_SHA1="$(printf '%s' "$IDENTITY_LINE" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')"
-          if [[ "$ACTUAL_CERT_SHA1" != "$EXPECTED_CERT_SHA1" ]]; then
-            echo "Imported identity fingerprint does not match SNAPLEX_SIGNING_CERT_SHA1." >&2
-            exit 1
-          fi
 
           echo "SNAPLEX_SIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
           echo "SNAPLEX_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           echo "SNAPLEX_HARDENED_RUNTIME=1" >> "$GITHUB_ENV"
+          echo "SNAPLEX_DISABLE_LIBRARY_VALIDATION=1" >> "$GITHUB_ENV"
           echo "SNAPLEX_REQUIRE_STABLE_SIGNING=1" >> "$GITHUB_ENV"
           echo "SNAPLEX_EXPECTED_SIGNING_CERT_SHA1=$EXPECTED_CERT_SHA1" >> "$GITHUB_ENV"
-          rm -f "$CERTIFICATE_PATH" "$CERTIFICATE_PEM_PATH" "$CERTIFICATE_DER_PATH"
+          rm -f "$CERTIFICATE_PATH" "$CERTIFICATE_PEM_PATH"
 
       - name: Build and package app
         env:

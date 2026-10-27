@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-APP_VERSION="${SNAPLEX_VERSION:-1.0.5}"
+APP_VERSION="${SNAPLEX_VERSION:-1.0.6}"
 APP_BUILD_NUMBER="${SNAPLEX_BUILD_NUMBER:-$APP_VERSION}"
 
 echo "==> [1/3] Compiling SnapLex (arm64 native release)..."
@@ -133,12 +133,16 @@ SIGNING_ARGS=(--force --sign "$SIGN_ID")
 if [ -n "$SIGNING_KEYCHAIN" ]; then
     SIGNING_ARGS+=(--keychain "$SIGNING_KEYCHAIN")
 fi
+APP_SIGNING_ARGS=("${SIGNING_ARGS[@]}")
+if [ "${SNAPLEX_DISABLE_LIBRARY_VALIDATION:-0}" = "1" ]; then
+    APP_SIGNING_ARGS+=(--entitlements "$ROOT_DIR/scripts/SnapLex-selfsigned.entitlements")
+fi
 codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
 codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" --preserve-metadata=entitlements "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
 codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/Autoupdate"
 codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$FRAMEWORK/Versions/B/Updater.app"
 codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$FRAMEWORK"
-codesign "${SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$APP_DIR"
+codesign "${APP_SIGNING_ARGS[@]}" "${SIGN_OPTIONS[@]}" "$APP_DIR"
 
 # Release builds must use the persistent self-signed identity. Its certificate
 # leaf hash is checked against the value pinned in GitHub Actions variables.

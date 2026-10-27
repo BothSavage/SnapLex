@@ -2,7 +2,7 @@
 
 应用内更新使用 Sparkle 的 Ed25519 密钥验证更新清单和下载包。macOS 代码签名使用固定的「SnapLex Stable Code Signing」自签名证书，供 TCC 在各版本之间识别同一个应用。两把密钥用途不同，均不得提交到仓库。
 
-固定证书不提供 Apple Developer ID 信任或公证。因此公开下载仍需在首次运行前按 [安装提示](docs/release-installation.md) 移除 quarantine。应用内更新的 Ed25519 验证仍会验证下载包来源。首次从 ad-hoc 签名的 1.0.4 迁移时，macOS 可能要求重新授权；此后持续使用同一证书、bundle ID `io.github.snaplex.app` 和同一安装位置，可避免每次更新重新设置权限。不要重建或替换签名证书；证书变更会改变 TCC 身份。
+固定证书不提供 Apple Developer ID 信任或公证。因此公开下载仍需在首次运行前按 [安装提示](docs/release-installation.md) 移除 quarantine。应用内更新的 Ed25519 验证仍会验证下载包来源。首次从 ad-hoc 签名的 1.0.4 迁移时，macOS 可能要求重新授权；此后持续使用同一证书、bundle ID `io.github.snaplex.app` 和同一安装位置，可避免每次更新重新设置权限。不要重建或替换签名证书；证书变更会改变 TCC 身份。由于自签名证书没有 Apple Team ID，Hardened Runtime 发布包需要在主程序上启用 `com.apple.security.cs.disable-library-validation`，以便加载包内的 Sparkle 框架；不要把该例外扩展到其他运行时限制。
 
 仓库的 `.github/workflows/ci.yml` 会在 `main` 分支推送和 Pull Request 上运行 `swift test`。发布工作流只在推送 `vMAJOR.MINOR.PATCH` tag 时运行。
 
@@ -31,7 +31,7 @@ Sparkle 私钥当前存放在本机钥匙串，账号名为 `io.github.snaplex.u
 
 1. 完成上述签名身份配置，并确认 `SPARKLE_EDDSA_PRIVATE_KEY` 已添加。
 2. 将代码推送到 `main`，确认 `macOS CI` 检查通过。
-3. 创建并推送三段式版本 tag，例如 `v1.0.5`。
+3. 创建并推送三段式版本 tag，例如 `v1.0.6`。
 4. GitHub Actions 使用固定自签名证书签署应用，构建未经公证的 DMG，生成经 Sparkle 签名的 `appcast.xml`，再创建正式 Release。
 5. 用户按 [安装提示](docs/release-installation.md) 首次打开应用；之后可通过应用内更新安装新版。
 
@@ -47,6 +47,7 @@ SIGNING_SHA1="$(security find-identity -p codesigning "$SIGNING_KEYCHAIN" | awk 
 SNAPLEX_SIGN_IDENTITY="SnapLex Stable Code Signing" \
 SNAPLEX_SIGNING_KEYCHAIN="$SIGNING_KEYCHAIN" \
 SNAPLEX_HARDENED_RUNTIME=1 \
+SNAPLEX_DISABLE_LIBRARY_VALIDATION=1 \
 SNAPLEX_REQUIRE_STABLE_SIGNING=1 \
 SNAPLEX_EXPECTED_SIGNING_CERT_SHA1="$SIGNING_SHA1" \
 ./scripts/build_app.sh

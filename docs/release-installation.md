@@ -1,6 +1,6 @@
 ## 安装提示 / Installation note
 
-SnapLex 后续版本使用固定的自签名代码证书，macOS 可以据此保留应用更新前授予的权限。从 ad-hoc 签名的 1.0.4 切换到固定证书版本时，系统可能要求重新授权一次；之后相同证书签发的更新通常不需要重复设置。该版本未经 Apple 公证，首次打开时 macOS 可能阻止运行。确认应用来自可信的 SnapLex 发布页后，将 `SnapLex.app` 放入「应用程序」，在终端执行：
+SnapLex 后续版本使用固定的自签名代码证书，macOS 可以据此保留应用更新前授予的权限。从 ad-hoc 签名的 1.0.4 切换到固定证书版本时，系统可能要求重新授权一次；之后相同证书签发的更新通常不需要重复设置。**1.0.5 存在启动崩溃，请下载 1.0.6 或更新版本；1.0.5 无法启动内置更新，必须手动下载新版。**该版本未经 Apple 公证，首次打开时 macOS 可能阻止运行。确认应用来自可信的 SnapLex 发布页后，将 `SnapLex.app` 放入「应用程序」，在终端执行：
 
 ```bash
 sudo xattr -rd com.apple.quarantine /Applications/SnapLex.app
