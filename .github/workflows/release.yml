@@ -73,6 +73,14 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "$HOME/Library/Keychains/login.keychain-db"
+
+          IDENTITY_LINE="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$SIGNING_IDENTITY\"" | head -n 1 || true)"
+          IMPORTED_CERT_SHA1="$(printf '%s' "$IDENTITY_LINE" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')"
+          if [[ "$IMPORTED_CERT_SHA1" != "$EXPECTED_CERT_SHA1" ]]; then
+            echo "Imported signing identity is missing or does not match SNAPLEX_SIGNING_CERT_SHA1." >&2
+            exit 1
+          fi
 
           echo "SNAPLEX_SIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
           echo "SNAPLEX_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
