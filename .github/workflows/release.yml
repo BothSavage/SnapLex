@@ -101,7 +101,10 @@ jobs:
         run: |
           DMG_PATH="$RUNNER_TEMP/SnapLex-${RELEASE_VERSION}-macOS-${RELEASE_ARCH}-unnotarized.dmg"
           hdiutil create -volname SnapLex -srcfolder dist/SnapLex.app -ov -format UDZO "$DMG_PATH"
+          CHECKSUM_PATH="$DMG_PATH.sha256"
+          (cd "$(dirname "$DMG_PATH")" && shasum -a 256 "$(basename "$DMG_PATH")") > "$CHECKSUM_PATH"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "CHECKSUM_PATH=$CHECKSUM_PATH" >> "$GITHUB_ENV"
 
       - name: Generate signed update feed
         env:
@@ -124,7 +127,7 @@ jobs:
         shell: bash
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            for asset in "$DMG_PATH" "$APPCAST_PATH"; do
+            for asset in "$DMG_PATH" "$CHECKSUM_PATH" "$APPCAST_PATH"; do
               ASSET_NAME="$(basename "$asset")"
               if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -Fxq -- "$ASSET_NAME"; then
                 echo "Release asset already exists: $ASSET_NAME"
@@ -133,5 +136,5 @@ jobs:
               fi
             done
           else
-            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --notes-file docs/release-installation.md --generate-notes
+            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$CHECKSUM_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --notes "$(cat docs/release-installation.md)" --generate-notes
           fi
