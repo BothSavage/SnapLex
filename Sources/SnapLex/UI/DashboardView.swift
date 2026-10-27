@@ -284,7 +284,7 @@ private struct DashboardHomeView: View {
                             ) {
                                 ForEach(Array(screenshots.records.prefix(4))) { record in
                                     DashboardScreenshotTile(record: record) {
-                                        NSWorkspace.shared.open(record.fileURL)
+                                        PinManager.shared.pinImageFile(record.fileURL)
                                     }
                                 }
                             }

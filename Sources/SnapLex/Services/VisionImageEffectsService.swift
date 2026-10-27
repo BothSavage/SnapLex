@@ -82,8 +82,7 @@ public final class VisionImageEffectsService {
                 from: handler,
                 croppedToInstancesExtent: false
             )
-            let subject = CIImage(cvPixelBuffer: pixelBuffer).cropped(to: source.extent)
-            output = subjectWithDropShadow(subject, canvas: source.extent)
+            output = CIImage(cvPixelBuffer: pixelBuffer).cropped(to: source.extent)
 
         case .blurBackground:
             let maskBuffer = try observation.generateScaledMaskForImage(forInstances: instances, from: handler)
@@ -108,27 +107,6 @@ public final class VisionImageEffectsService {
             throw VisionImageEffectsError.couldNotRender
         }
         return NSImage(cgImage: result, size: pointSize)
-    }
-
-    private static func subjectWithDropShadow(_ subject: CIImage, canvas: CGRect) -> CIImage {
-        let shadowColor = CIFilter.colorMatrix()
-        shadowColor.inputImage = subject
-        shadowColor.rVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-        shadowColor.gVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-        shadowColor.bVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-        shadowColor.aVector = CIVector(x: 0, y: 0, z: 0, w: 0.84)
-
-        let blurRadius = min(40, max(16, min(canvas.width, canvas.height) * 0.018))
-        let shadow = (shadowColor.outputImage ?? subject)
-            .clampedToExtent()
-            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: blurRadius])
-            .transformed(by: CGAffineTransform(translationX: 0, y: -blurRadius * 0.55))
-            .cropped(to: canvas)
-
-        let composite = CIFilter.sourceOverCompositing()
-        composite.inputImage = subject
-        composite.backgroundImage = shadow
-        return (composite.outputImage ?? subject).cropped(to: canvas)
     }
 
 }

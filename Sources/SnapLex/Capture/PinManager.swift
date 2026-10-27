@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ImageIO
 import SwiftUI
 import Translation
 
@@ -302,7 +303,8 @@ public final class PinManager: ObservableObject {
         _ image: NSImage,
         at screenRect: NSRect? = nil,
         startWithInPlaceTranslation: Bool = false,
-        startWithOCRSidebar: Bool = false
+        startWithOCRSidebar: Bool = false,
+        startWithShadow: Bool = true
     ) -> PinnedImageWindow {
         let targetRect: NSRect
 
@@ -327,7 +329,7 @@ public final class PinManager: ObservableObject {
             targetRect = NSRect(x: x, y: y, width: w, height: h)
         }
 
-        let win = PinnedImageWindow(image: image, initialRect: targetRect)
+        let win = PinnedImageWindow(image: image, initialRect: targetRect, startWithShadow: startWithShadow)
         activePins.append(win)
         allPinsHidden = false
         win.makeKeyAndOrderFront(nil)
@@ -340,6 +342,18 @@ public final class PinManager: ObservableObject {
             win.activateOCRSidebar()
         }
         return win
+    }
+
+    /// Decode the original screenshot away from the main thread instead of pinning its thumbnail.
+    public func pinImageFile(_ url: URL) {
+        Task { @MainActor in
+            let image = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+                return CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+            }.value
+            guard let image else { NSSound.beep(); return }
+            pinImage(NSImage(cgImage: image, size: .zero))
+        }
     }
 
     public func pinFromClipboard() {
@@ -488,7 +502,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
     private var imageEffectTask: Task<Void, Never>?
     private var isApplyingZoom: Bool = false
 
-    public init(image: NSImage, initialRect: NSRect) {
+    public init(image: NSImage, initialRect: NSRect, startWithShadow: Bool = true) {
         self.originalImage = image
         self.baseAspectSize = NSRect(origin: .zero, size: image.size).size
         self.viewModel = PinnedWindowViewModel(originalImage: image)
@@ -506,8 +520,8 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         self.backgroundColor = .clear
         self.appearance = SnapLexTheme.appKitAppearance(for: AppSettings.shared.appearanceMode)
         self.isOpaque = false
-        // Default: Shadow ON (`hasShadow = true`), borderless pure image!
-        self.hasShadow = true
+        self.hasShadow = startWithShadow
+        self.viewModel.hasWindowShadow = startWithShadow
         self.isMovableByWindowBackground = true
         self.isReleasedWhenClosed = false
         self.delegate = self
@@ -1050,6 +1064,11 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                 self.viewModel.isTranslatingInPlace = false
                 self.viewModel.pendingTranslationID = UUID()
                 self.viewModel.cachedInPlaceResult = nil
+                if effect == .extractSubject {
+                    self.viewModel.hasWindowShadow = false
+                    self.hasShadow = false
+                    self.invalidateShadow()
+                }
                 self.viewModel.rebuildDisplayedImage()
                 self.viewModel.showHUD(effect.completionMessage)
             } catch {
@@ -1497,7 +1516,6 @@ private struct PinOuterToolbarSwiftUIView: View {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 1)
                     )
-                    .shadow(color: .black.opacity(0.32), radius: 8, x: 0, y: 3)
             )
             .padding(.top, 28) // Space for 0ms instant hover tooltips above buttons
 
@@ -1650,9 +1668,6 @@ private struct PinnedImageRootView: View {
                                 .resizable()
                                 .interpolation(.high)
                                 .frame(width: geo.size.width, height: geo.size.height)
-                                .compositingGroup()
-                                .shadow(color: .black.opacity(0.62), radius: 16, x: 0, y: 7)
-                                .shadow(color: .black.opacity(0.42), radius: 30, x: 0, y: 14)
 
                             Canvas { context, _ in
                                 for item in vm.annotations {

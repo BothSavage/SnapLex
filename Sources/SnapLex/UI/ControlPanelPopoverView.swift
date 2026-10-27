@@ -6,6 +6,7 @@ public struct ControlPanelPopoverView: View {
     let onScreenshot: () -> Void
     let onRecord: () -> Void
     let onPinClipboard: () -> Void
+    let onPinScreenshot: (URL) -> Void
     let onOpenDashboard: (DashboardSection) -> Void
     let onQuit: () -> Void
     let onRestart: () -> Void
@@ -50,6 +51,7 @@ public struct ControlPanelPopoverView: View {
         onScreenshot: @escaping () -> Void,
         onRecord: @escaping () -> Void,
         onPinClipboard: @escaping () -> Void,
+        onPinScreenshot: @escaping (URL) -> Void,
         onOpenDashboard: @escaping (DashboardSection) -> Void,
         onQuit: @escaping () -> Void,
         onRestart: @escaping () -> Void
@@ -57,6 +59,7 @@ public struct ControlPanelPopoverView: View {
         self.onScreenshot = onScreenshot
         self.onRecord = onRecord
         self.onPinClipboard = onPinClipboard
+        self.onPinScreenshot = onPinScreenshot
         self.onOpenDashboard = onOpenDashboard
         self.onQuit = onQuit
         self.onRestart = onRestart
@@ -163,7 +166,7 @@ public struct ControlPanelPopoverView: View {
                             } else {
                                 ForEach(Array(screenshots.records.prefix(3).enumerated()), id: \.element.id) { index, record in
                                     ControlPanelScreenshotRow(record: record) {
-                                        NSWorkspace.shared.open(record.fileURL)
+                                        onPinScreenshot(record.fileURL)
                                     }
                                     if index < min(3, screenshots.records.count) - 1 { Divider() }
                                 }

@@ -221,6 +221,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         self?.closeControlPopover()
                         WindowManager.shared.triggerPinFlow()
                     },
+                    onPinScreenshot: { [weak self] url in
+                        self?.closeControlPopover()
+                        PinManager.shared.pinImageFile(url)
+                    },
                     onOpenDashboard: { [weak self] section in
                         self?.closeControlPopover()
                         WindowManager.shared.showDashboard(section: section)

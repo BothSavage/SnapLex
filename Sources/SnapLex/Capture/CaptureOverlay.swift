@@ -2062,7 +2062,7 @@ public final class CaptureCanvasView: NSView {
                 let processed = try await VisionImageEffectsService.shared.apply(effect, to: image)
                 guard self.sessionID == sessionID else { return }
                 self.onFinish()
-                PinManager.shared.pinImage(processed, at: screenRect)
+                PinManager.shared.pinImage(processed, at: screenRect, startWithShadow: effect != .extractSubject)
             } catch {
                 guard self.sessionID == sessionID else { return }
                 self.showToast((error as? VisionImageEffectsError)?.errorDescription ?? L10n.string("无法生成图片效果。"))
