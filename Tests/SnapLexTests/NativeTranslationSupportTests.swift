@@ -52,9 +52,11 @@ final class NativeTranslationSupportTests: XCTestCase {
 
         XCTAssertEqual(configuration.source, Locale.Language(identifier: "zh"))
         XCTAssertEqual(configuration.target, Locale.Language(identifier: "en"))
+        #if compiler(>=6.3.3)
         if #available(macOS 26.4, *) {
             XCTAssertEqual(configuration.preferredStrategy, .lowLatency)
         }
+        #endif
     }
 
     func testNativeTranslationSupportsChineseEnglishPairInBothDirections() async throws {
@@ -74,6 +76,7 @@ final class NativeTranslationSupportTests: XCTestCase {
     }
 
     func testInstalledNativeTranslationRunsInBothDirections() async throws {
+        #if compiler(>=6.2)
         guard #available(macOS 26.0, *) else {
             throw XCTSkip("Direct installed-language TranslationSession is available on macOS 26 and later.")
         }
@@ -96,5 +99,8 @@ final class NativeTranslationSupportTests: XCTestCase {
         let chineseResult = try await toChinese.translate("This is a system translation test.")
         XCTAssertFalse(chineseResult.targetText.isEmpty)
         XCTAssertNotEqual(chineseResult.targetText, chineseResult.sourceText)
+        #else
+        throw XCTSkip("Direct installed-language TranslationSession requires the macOS 26 SDK.")
+        #endif
     }
 }

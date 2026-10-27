@@ -72,6 +72,8 @@ public enum NativeTranslationSupport {
     ) -> TranslationSession.Configuration {
         let sourceLanguage = Locale.Language(identifier: source)
         let targetLanguage = Locale.Language(identifier: target)
+        // Older SDKs cannot resolve the new overload, even behind #available.
+        #if compiler(>=6.3.3)
         if #available(macOS 26.4, *) {
             return TranslationSession.Configuration(
                 source: sourceLanguage,
@@ -79,6 +81,7 @@ public enum NativeTranslationSupport {
                 preferredStrategy: .lowLatency
             )
         }
+        #endif
         return TranslationSession.Configuration(source: sourceLanguage, target: targetLanguage)
     }
 
@@ -109,9 +112,11 @@ public enum NativeTranslationSupport {
     }
 
     public static func userFacingError(for error: Error) -> String {
+        #if compiler(>=6.2)
         if #available(macOS 26.0, *), TranslationError.notInstalled ~= error {
             return L10n.string("系统语言包尚未安装，请允许系统下载后重试。")
         }
+        #endif
         if TranslationError.unsupportedLanguagePairing ~= error {
             return L10n.string("macOS 暂不支持这组源语言和目标语言。")
         }
