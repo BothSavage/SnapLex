@@ -29,6 +29,7 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$CONTENT_DIR" "$MOUNT_DIR"
 ditto "$APP_DIR" "$CONTENT_DIR/SnapLex.app"
+ln -s /Applications "$CONTENT_DIR/Applications"
 cp "$ICON_PATH" "$CONTENT_DIR/.VolumeIcon.icns"
 hdiutil create -volname SnapLex -srcfolder "$CONTENT_DIR" -format UDRW "$RW_DMG"
 hdiutil attach -nobrowse -noverify -quiet -mountpoint "$MOUNT_DIR" "$RW_DMG"

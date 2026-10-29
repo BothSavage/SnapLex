@@ -11,7 +11,6 @@ final class NativeUpdateInstaller: NSObject, ObservableObject, SPUUserDriver {
         case checking
         case downloading(Double?)
         case preparing(Double?)
-        case ready
         case installing
         case failed(String)
     }
@@ -20,7 +19,6 @@ final class NativeUpdateInstaller: NSObject, ObservableObject, SPUUserDriver {
     private var updater: SPUUpdater?
     private var expectedVersion: String?
     private var cancelDownload: (() -> Void)?
-    private var installReply: ((SPUUserUpdateChoice) -> Void)?
     private var expectedBytes: UInt64 = 0
     private var receivedBytes: UInt64 = 0
     private var lastProgressPercent = -1
@@ -47,14 +45,6 @@ final class NativeUpdateInstaller: NSObject, ObservableObject, SPUUserDriver {
             self.updater = nil
             state = .failed(error.localizedDescription)
         }
-    }
-
-    func installAndRestart() {
-        guard let reply = installReply else { return }
-        installReply = nil
-        (NSApp.delegate as? AppDelegate)?.allowTerminationForUpdate()
-        state = .installing
-        reply(.install)
     }
 
     func cancel() {
@@ -109,12 +99,16 @@ final class NativeUpdateInstaller: NSObject, ObservableObject, SPUUserDriver {
         lastProgressPercent = percent
         state = .preparing(bounded)
     }
-    func showReady(toInstallAndRelaunch reply: @escaping (SPUUserUpdateChoice) -> Void) { installReply = reply; state = .ready }
+    func showReady(toInstallAndRelaunch reply: @escaping (SPUUserUpdateChoice) -> Void) {
+        cancelDownload = nil
+        (NSApp.delegate as? AppDelegate)?.allowTerminationForUpdate()
+        state = .installing
+        reply(.install)
+    }
     func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool, retryTerminatingApplication: @escaping () -> Void) { state = .installing }
     func showUpdateInstalledAndRelaunched(_ relaunched: Bool, acknowledgement: @escaping () -> Void) { acknowledgement() }
     func dismissUpdateInstallation() {
         cancelDownload = nil
-        installReply = nil
         updater = nil
         if case .failed = state { return }
         state = .idle

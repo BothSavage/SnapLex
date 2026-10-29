@@ -98,9 +98,12 @@ jobs:
         run: |
           DMG_PATH="$RUNNER_TEMP/SnapLex-${RELEASE_VERSION}-macOS-${RELEASE_ARCH}-unnotarized.dmg"
           ./scripts/create_dmg.sh dist/SnapLex.app "$DMG_PATH"
+          ZIP_PATH="${DMG_PATH%.dmg}.zip"
+          ./scripts/create_icon_archive.sh "$DMG_PATH" dist/SnapLex.app/Contents/Resources/AppIcon.icns "$ZIP_PATH"
           CHECKSUM_PATH="$DMG_PATH.sha256"
           (cd "$(dirname "$DMG_PATH")" && shasum -a 256 "$(basename "$DMG_PATH")") > "$CHECKSUM_PATH"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "ZIP_PATH=$ZIP_PATH" >> "$GITHUB_ENV"
           echo "CHECKSUM_PATH=$CHECKSUM_PATH" >> "$GITHUB_ENV"
 
       - name: Verify packaged app startup
@@ -111,11 +114,17 @@ jobs:
           hdiutil attach -readonly -nobrowse -noverify -quiet -mountpoint "$MOUNT_DIR" "$DMG_PATH"
           trap 'hdiutil detach "$MOUNT_DIR" -quiet || true' EXIT
           cmp "$MOUNT_DIR/.VolumeIcon.icns" "$MOUNT_DIR/SnapLex.app/Contents/Resources/AppIcon.icns"
+          test "$(readlink "$MOUNT_DIR/Applications")" = /Applications
           if ! GetFileInfo -a "$MOUNT_DIR" | grep -q C; then
             echo "Disk image is missing its custom volume icon flag." >&2
             exit 1
           fi
           ./scripts/verify_app_bundle.sh "$MOUNT_DIR/SnapLex.app"
+          ZIP_CHECK_DIR="$RUNNER_TEMP/snaplex-zip-check"
+          mkdir -p "$ZIP_CHECK_DIR"
+          ditto -x -k "$ZIP_PATH" "$ZIP_CHECK_DIR"
+          cmp "$DMG_PATH" "$ZIP_CHECK_DIR/$(basename "$DMG_PATH")"
+          GetFileInfo -a "$ZIP_CHECK_DIR/$(basename "$DMG_PATH")" | grep -q C
 
       - name: Generate signed update feed
         env:
@@ -138,7 +147,7 @@ jobs:
         shell: bash
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            for asset in "$DMG_PATH" "$CHECKSUM_PATH" "$APPCAST_PATH"; do
+            for asset in "$DMG_PATH" "$ZIP_PATH" "$CHECKSUM_PATH" "$APPCAST_PATH"; do
               ASSET_NAME="$(basename "$asset")"
               if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -Fxq -- "$ASSET_NAME"; then
                 echo "Release asset already exists: $ASSET_NAME"
@@ -156,5 +165,5 @@ jobs:
               : > "$NOTES_PATH"
             fi
             cat docs/release-installation.md >> "$NOTES_PATH"
-            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$CHECKSUM_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --notes-file "$NOTES_PATH" --generate-notes
+            gh release create "$GITHUB_REF_NAME" "$DMG_PATH" "$ZIP_PATH" "$CHECKSUM_PATH" "$APPCAST_PATH" --title "SnapLex $RELEASE_VERSION" --notes-file "$NOTES_PATH" --generate-notes
           fi

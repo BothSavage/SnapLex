@@ -362,9 +362,6 @@ public struct SettingsView: View {
             Button(L10n.string("正在安装更新…")) {}
                 .buttonStyle(.bordered)
                 .disabled(true)
-        case .ready:
-            Button(L10n.string("安装并重启")) { updateInstaller.installAndRestart() }
-                .buttonStyle(.borderedProminent)
         case .idle, .failed:
             if case let .updateAvailable(version, _, releaseURL, downloadURL, hasUpdateFeed) = releaseUpdateChecker.state {
                 if downloadURL != nil && hasUpdateFeed {
@@ -399,7 +396,7 @@ public struct SettingsView: View {
     @ViewBuilder
     private var updateInstallStatus: some View {
         switch updateInstaller.state {
-        case .idle, .ready:
+        case .idle:
             EmptyView()
         case let .failed(message):
             Text(message)

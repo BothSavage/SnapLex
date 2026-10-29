@@ -1,5 +1,9 @@
 ## 安装提示 / Installation note
 
+发布页面提供 ZIP 时，可下载并解压 ZIP，再打开其中带 SnapLex 图标的 DMG，将 SnapLex 拖到窗口中的 Applications。直接下载 DMG 也可以安装。
+
+When a ZIP is available on the release page, download and extract it, open the DMG inside, and drag SnapLex to Applications. The DMG can also be downloaded directly.
+
 SnapLex 后续版本使用固定的自签名代码证书，macOS 可以据此保留应用更新前授予的权限。从 ad-hoc 签名的 1.0.4 切换到固定证书版本时，系统可能要求重新授权一次；之后相同证书签发的更新通常不需要重复设置。**1.0.5 和 1.0.6 存在启动崩溃，无法启动内置更新，请手动下载 1.0.7 或更新版本。**该版本未经 Apple 公证，首次打开时 macOS 可能阻止运行。确认应用来自可信的 SnapLex 发布页后，将 `SnapLex.app` 放入「应用程序」，在终端执行：
 
 ```bash
