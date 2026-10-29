@@ -53,6 +53,6 @@ SNAPLEX_EXPECTED_SIGNING_CERT_SHA1="$SIGNING_SHA1" \
 ./scripts/build_app.sh
 ```
 
-将生成的 `dist/SnapLex.app` 放入名为 `SnapLex-版本号-macOS-架构-unnotarized.dmg` 的 DMG，再运行 `scripts/generate_appcast.sh 版本号 DMG路径 更新说明.md` 生成清单。脚本会在挂载的 DMG 中运行无界面启动与资源检查，拒绝 ad-hoc 签名，并可通过 `SNAPLEX_EXPECTED_SIGNING_CERT_SHA1` 验证使用的是固定证书。将 DMG 和 `appcast.xml` 一起上传到对应 Release。
+使用 `scripts/create_dmg.sh dist/SnapLex.app SnapLex-版本号-macOS-架构-unnotarized.dmg` 创建带应用图标的磁盘映像，再运行 `scripts/generate_appcast.sh 版本号 DMG路径 更新说明.md` 生成清单。脚本会在挂载的 DMG 中运行无界面启动与资源检查，拒绝 ad-hoc 签名，并可通过 `SNAPLEX_EXPECTED_SIGNING_CERT_SHA1` 验证使用的是固定证书。将 DMG 和 `appcast.xml` 一起上传到对应 Release。
 
 如果替换证书，必须同时更新 GitHub Actions Variable `SNAPLEX_SIGNING_CERT_SHA1`，并预期用户需要重新授予 macOS 权限。Apple Development 证书可用于个人本机开发，但不能代替此发行身份；发布签名也不能改回 ad-hoc。

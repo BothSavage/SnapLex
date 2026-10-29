@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-APP_VERSION="${SNAPLEX_VERSION:-1.0.12}"
+APP_VERSION="${SNAPLEX_VERSION:-1.0.13}"
 APP_BUILD_NUMBER="${SNAPLEX_BUILD_NUMBER:-$APP_VERSION}"
 
 echo "==> [1/3] Compiling SnapLex (arm64 native release)..."
