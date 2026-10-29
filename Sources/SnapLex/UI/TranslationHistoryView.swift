@@ -20,6 +20,7 @@ private struct QueryRequest: Hashable {
     let search: String
     let revision: UInt64
     let retry: Int
+    let includeTerms: Bool
 }
 
 public struct TranslationHistoryView: View {
@@ -96,7 +97,7 @@ public struct TranslationHistoryView: View {
 
             HStack(spacing: 12) {
                 metricCard(title: L10n.string("翻译次数"), value: query.isLoading ? "…" : "\(query.summary.count)", icon: "character.book.closed")
-                metricCard(title: L10n.string("词汇数量"), value: query.isLoading ? "…" : "\(statistics.count)", icon: "textformat.abc")
+                metricCard(title: L10n.string("词汇数量"), value: query.isLoading || query.isLoadingTerms ? "…" : mode == .records ? "—" : "\(query.summary.distinctTermCount)", icon: "textformat.abc")
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -143,11 +144,11 @@ public struct TranslationHistoryView: View {
         .frame(minWidth: 720, minHeight: 650)
         .background(SnapLexTheme.toolbarBackground(for: colorScheme))
         .snapLexAppearance()
-        .task(id: QueryRequest(period: period, search: search, revision: store.revision, retry: retry)) {
+        .task(id: QueryRequest(period: period, search: search, revision: store.revision, retry: retry, includeTerms: mode == .terms)) {
             if !search.isEmpty {
                 do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
             }
-            await query.load(store: store, period: period, search: search)
+            await query.load(store: store, period: period, search: search, includeTerms: mode == .terms)
         }
         .sheet(isPresented: $showingIgnoredWords) {
             IgnoredTranslationWordsView(store: store)
@@ -181,7 +182,7 @@ public struct TranslationHistoryView: View {
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack {
-                                    Text(store.learningText(for: entry))
+                                    Text(query.learningText(for: entry))
                                         .font(.system(size: 14, weight: .medium))
                                         .textSelection(.enabled)
                                     Spacer(minLength: 8)
@@ -192,7 +193,7 @@ public struct TranslationHistoryView: View {
                                         .padding(.vertical, 3)
                                         .background(Color.primary.opacity(0.055), in: Capsule())
                                 }
-                                Text(store.contextText(for: entry))
+                                Text(query.contextText(for: entry))
                                     .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
@@ -232,7 +233,7 @@ public struct TranslationHistoryView: View {
     private func termsList(_ statistics: [TranslationTermStatistic]) -> some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                if query.isLoading {
+                if query.isLoading || query.isLoadingTerms {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 180)
                 } else if statistics.isEmpty {
                     ContentUnavailableView(

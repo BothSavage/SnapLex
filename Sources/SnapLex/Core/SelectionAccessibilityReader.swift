@@ -53,6 +53,10 @@ final class SelectionAccessibilityReader: @unchecked Sendable {
 
     private struct RequestContext {
         let deadline: UInt64
+        var shouldProceed: @Sendable () -> Bool = { true }
+        // Request-local raw reads preserve the policy's depth and role-chain
+        // classification for each endpoint, even where their ancestors overlap.
+        var ancestorReads: [CFHashCode: [(AXUIElement, SelectionAXAncestorRead<AXUIElement>)]] = [:]
         var callCount = 0
         var lastError: Int32?
         var timedOut = false
@@ -74,104 +78,115 @@ final class SelectionAccessibilityReader: @unchecked Sendable {
         shouldProceed: @escaping @Sendable () -> Bool = { true }
     ) async -> SelectionAXSnapshot {
         let enqueuedAt = DispatchTime.now().uptimeNanoseconds
-        return await withCheckedContinuation { continuation in
-            queue.async {
-                let startedAt = DispatchTime.now().uptimeNanoseconds
-                let timing = self.makeTimingBudget(enqueuedAt: enqueuedAt)
-                var context = self.makeContext(startedAt: startedAt, timing: timing)
-                guard shouldProceed() else {
-                    self.logger.debug("mouse AX request cancelled before IPC queueWaitMs=\((startedAt - enqueuedAt) / 1_000_000, privacy: .public)")
-                    continuation.resume(returning: self.emptySnapshot(
-                        enqueuedAt: enqueuedAt,
-                        startedAt: startedAt,
-                        context: context,
-                        timedOut: false
+        let cancellationGate = SelectionMouseGestureGenerationGate()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                queue.async {
+                    let startedAt = DispatchTime.now().uptimeNanoseconds
+                    let timing = self.makeTimingBudget(enqueuedAt: enqueuedAt)
+                    var context = self.makeContext(startedAt: startedAt, timing: timing)
+                    context.shouldProceed = { shouldProceed() && cancellationGate.isCurrent(0) }
+                    guard shouldProceed() else {
+                        self.logger.debug("mouse AX request cancelled before IPC queueWaitMs=\((startedAt - enqueuedAt) / 1_000_000, privacy: .public)")
+                        continuation.resume(returning: self.emptySnapshot(
+                            enqueuedAt: enqueuedAt,
+                            startedAt: startedAt,
+                            context: context,
+                            timedOut: false
+                        ))
+                        return
+                    }
+                    guard timing.shouldStartWorker(at: startedAt), self.hasTime(context) else {
+                        context.timedOut = true
+                        self.logger.info("mouse AX request rejected before IPC reason=queue-wait-exceeded queueWaitMs=\((startedAt - enqueuedAt) / 1_000_000, privacy: .public)")
+                        continuation.resume(returning: self.emptySnapshot(
+                            enqueuedAt: enqueuedAt,
+                            startedAt: startedAt,
+                            context: context,
+                            timedOut: true
+                        ))
+                        return
+                    }
+
+                    let appElement = AXUIElementCreateApplication(processIdentifier)
+                    let downPoint = Self.accessibilityPoint(
+                        fromCocoaPoint: NSPoint(x: downX, y: downY),
+                        zeroScreenMaxY: CGFloat(zeroScreenMaxY)
+                    )
+                    let upPoint = Self.accessibilityPoint(
+                        fromCocoaPoint: NSPoint(x: upX, y: upY),
+                        zeroScreenMaxY: CGFloat(zeroScreenMaxY)
+                    )
+                    let downElement = self.element(
+                        in: appElement,
+                        x: downPoint.x,
+                        y: downPoint.y,
+                        context: &context
+                    )
+                    let upElement = downPoint == upPoint ? downElement : self.element(
+                        in: appElement,
+                        x: upPoint.x,
+                        y: upPoint.y,
+                        context: &context
+                    )
+                    let downInspection = downElement.flatMap { self.inspect($0, context: &context) }
+                    let upInspection = upElement.flatMap { self.inspect($0, context: &context) }
+
+                    // Endpoint hit tests are the primary signal for a mouse or
+                    // explicit selection. Read focus only as a bounded fallback
+                    // when both safe page endpoints omitted a usable selection.
+                    var focusedInspection: ElementInspection?
+                    var focusedTarget: SelectionAXTargetKind = .unavailable
+                    if Self.shouldReadFocusedSelection(
+                        downTarget: downInspection?.target ?? .unavailable,
+                        upTarget: upInspection?.target ?? .unavailable,
+                        downText: downInspection?.selectedText,
+                        upText: upInspection?.selectedText
+                    ),
+                       let focused = self.focusedElement(in: appElement, context: &context),
+                       let inspection = self.inspect(focused, context: &context) {
+                        focusedInspection = inspection
+                        focusedTarget = inspection.target
+                    }
+
+                    // Never reuse a focused editable field's previous selection for
+                    // a page drag. Prefer the mouse-up hit target, then the down target.
+                    let selectedText = Self.selectedText(
+                        upText: upInspection?.selectedText,
+                        downText: downInspection?.selectedText,
+                        focusedTarget: focusedTarget,
+                        focusedText: focusedInspection?.selectedText
+                    )
+
+                    let downPID = downElement.flatMap { self.processIdentifier(of: $0, context: &context) }
+                    let upPID = upElement.flatMap { element in
+                        if let downElement, CFEqual(element, downElement) { return downPID }
+                        return self.processIdentifier(of: element, context: &context)
+                    }
+                    let timedOut = !self.hasTime(context)
+                    let completedAt = DispatchTime.now().uptimeNanoseconds
+                    let duration = completedAt - startedAt
+                    continuation.resume(returning: SelectionAXSnapshot(
+                        focusedTarget: focusedTarget,
+                        focusedProcessIdentifier: focusedInspection == nil ? nil : processIdentifier,
+                        downTarget: downInspection?.target ?? .unavailable,
+                        upTarget: upInspection?.target ?? .unavailable,
+                        downProcessIdentifier: downPID,
+                        upProcessIdentifier: upPID,
+                        downAncestorLimitReached: downInspection?.ancestorLimitReached ?? false,
+                        upAncestorLimitReached: upInspection?.ancestorLimitReached ?? false,
+                        selectedText: selectedText,
+                        durationMilliseconds: Int((completedAt - enqueuedAt) / 1_000_000),
+                        queueWaitMilliseconds: Int((startedAt - enqueuedAt) / 1_000_000),
+                        workerDurationMilliseconds: Int(duration / 1_000_000),
+                        accessibilityCallCount: context.callCount,
+                        lastAccessibilityError: context.lastError,
+                        timedOut: timedOut || context.timedOut
                     ))
-                    return
                 }
-                guard timing.shouldStartWorker(at: startedAt), self.hasTime(context) else {
-                    context.timedOut = true
-                    self.logger.info("mouse AX request rejected before IPC reason=queue-wait-exceeded queueWaitMs=\((startedAt - enqueuedAt) / 1_000_000, privacy: .public)")
-                    continuation.resume(returning: self.emptySnapshot(
-                        enqueuedAt: enqueuedAt,
-                        startedAt: startedAt,
-                        context: context,
-                        timedOut: true
-                    ))
-                    return
-                }
-
-                let appElement = AXUIElementCreateApplication(processIdentifier)
-                let downPoint = Self.accessibilityPoint(
-                    fromCocoaPoint: NSPoint(x: downX, y: downY),
-                    zeroScreenMaxY: CGFloat(zeroScreenMaxY)
-                )
-                let upPoint = Self.accessibilityPoint(
-                    fromCocoaPoint: NSPoint(x: upX, y: upY),
-                    zeroScreenMaxY: CGFloat(zeroScreenMaxY)
-                )
-                let downElement = self.element(
-                    in: appElement,
-                    x: downPoint.x,
-                    y: downPoint.y,
-                    context: &context
-                )
-                let upElement = self.element(
-                    in: appElement,
-                    x: upPoint.x,
-                    y: upPoint.y,
-                    context: &context
-                )
-                let downInspection = downElement.flatMap { self.inspect($0, context: &context) }
-                let upInspection = upElement.flatMap { self.inspect($0, context: &context) }
-
-                // Endpoint hit tests are the primary signal for a mouse or
-                // explicit selection. Read focus only as a bounded fallback
-                // when both safe page endpoints omitted a usable selection.
-                var focusedInspection: ElementInspection?
-                var focusedTarget: SelectionAXTargetKind = .unavailable
-                if Self.shouldReadFocusedSelection(
-                    downTarget: downInspection?.target ?? .unavailable,
-                    upTarget: upInspection?.target ?? .unavailable,
-                    downText: downInspection?.selectedText,
-                    upText: upInspection?.selectedText
-                ),
-                   let focused = self.focusedElement(in: appElement, context: &context),
-                   let inspection = self.inspect(focused, context: &context) {
-                    focusedInspection = inspection
-                    focusedTarget = inspection.target
-                }
-
-                // Never reuse a focused editable field's previous selection for
-                // a page drag. Prefer the mouse-up hit target, then the down target.
-                let selectedText = Self.selectedText(
-                    upText: upInspection?.selectedText,
-                    downText: downInspection?.selectedText,
-                    focusedTarget: focusedTarget,
-                    focusedText: focusedInspection?.selectedText
-                )
-
-                let timedOut = !self.hasTime(context)
-                let duration = DispatchTime.now().uptimeNanoseconds - startedAt
-                let completedAt = DispatchTime.now().uptimeNanoseconds
-                continuation.resume(returning: SelectionAXSnapshot(
-                    focusedTarget: focusedTarget,
-                    focusedProcessIdentifier: focusedInspection == nil ? nil : processIdentifier,
-                    downTarget: downInspection?.target ?? .unavailable,
-                    upTarget: upInspection?.target ?? .unavailable,
-                    downProcessIdentifier: downElement.flatMap(self.processIdentifier(of:)),
-                    upProcessIdentifier: upElement.flatMap(self.processIdentifier(of:)),
-                    downAncestorLimitReached: downInspection?.ancestorLimitReached ?? false,
-                    upAncestorLimitReached: upInspection?.ancestorLimitReached ?? false,
-                    selectedText: selectedText,
-                    durationMilliseconds: Int((completedAt - enqueuedAt) / 1_000_000),
-                    queueWaitMilliseconds: Int((startedAt - enqueuedAt) / 1_000_000),
-                    workerDurationMilliseconds: Int(duration / 1_000_000),
-                    accessibilityCallCount: context.callCount,
-                    lastAccessibilityError: context.lastError,
-                    timedOut: timedOut || context.timedOut
-                ))
             }
+        } onCancel: {
+            cancellationGate.update(to: 1)
         }
     }
 
@@ -231,12 +246,13 @@ final class SelectionAccessibilityReader: @unchecked Sendable {
     }
 
     private func hasTime(_ context: RequestContext) -> Bool {
-        DispatchTime.now().uptimeNanoseconds < context.deadline
+        context.shouldProceed() && !context.timedOut
+            && DispatchTime.now().uptimeNanoseconds < context.deadline
     }
 
     private func remainingTimeout(_ context: RequestContext) -> Float? {
         let now = DispatchTime.now().uptimeNanoseconds
-        guard now < context.deadline else { return nil }
+        guard context.shouldProceed(), !context.timedOut, now < context.deadline else { return nil }
         let remaining = Double(context.deadline - now) / 1_000_000_000
         return Float(min(perMessageTimeout, remaining))
     }
@@ -287,160 +303,22 @@ final class SelectionAccessibilityReader: @unchecked Sendable {
             startingAt: startingElement,
             maximumDepth: Self.maximumAncestorDepth
         ) { element in
-            guard let timeout = remainingTimeout(context) else {
+            guard hasTime(context) else {
                 context.timedOut = true
                 return .timedOut
             }
-            AXUIElementSetMessagingTimeout(element, timeout)
-            context.callCount += 1
-
-            let attributes: CFArray = [
-                kAXRoleAttribute as CFString,
-                kAXSubroleAttribute as CFString,
-                kAXSelectedTextAttribute as CFString
-            ] as CFArray
-            var values: CFArray?
-            let attributesError = AXUIElementCopyMultipleAttributeValues(element, attributes, [], &values)
-            var role: String?
-            var selectedText: String?
-
-            if attributesError == .success,
-               let values = values as? [Any],
-               values.count == 3 {
-                role = SelectionTriggerPolicy.normalizedTextEntryRole(role: values[0] as? String, subrole: values[1] as? String)
-                selectedText = role == "AXSecureTextField" ? nil : values[2] as? String
-            } else if attributesError == .attributeUnsupported {
-                // Some AX providers reject the entire multi-attribute request
-                // when only one attribute (commonly selected text on a
-                // hit-tested Preview group) is unsupported. Read each value
-                // independently so an unsupported selection attribute does
-                // not hide an otherwise safe role and parent chain.
-                recordAccessibilityError(attributesError, context: &context)
-                guard let roleTimeout = remainingTimeout(context) else {
-                    context.timedOut = true
-                    return .timedOut
-                }
-                AXUIElementSetMessagingTimeout(element, roleTimeout)
-                context.callCount += 1
-                var roleValue: CFTypeRef?
-                let roleError = AXUIElementCopyAttributeValue(
-                    element,
-                    kAXRoleAttribute as CFString,
-                    &roleValue
-                )
-                if roleError == .success {
-                    role = roleValue as? String
-                } else if roleError != .noValue {
-                    recordAccessibilityError(roleError, context: &context)
-                }
-                if context.timedOut { return .timedOut }
-
-                guard let subroleTimeout = remainingTimeout(context) else {
-                    context.timedOut = true
-                    return .timedOut
-                }
-                AXUIElementSetMessagingTimeout(element, subroleTimeout)
-                context.callCount += 1
-                var subroleValue: CFTypeRef?
-                let subroleError = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleValue)
-                if subroleError == .success {
-                    role = SelectionTriggerPolicy.normalizedTextEntryRole(role: role, subrole: subroleValue as? String)
-                } else if subroleError != .noValue && subroleError != .attributeUnsupported {
-                    recordAccessibilityError(subroleError, context: &context)
-                }
-                if context.timedOut { return .timedOut }
-                if role == "AXSecureTextField" {
-                    return .root(role: role, selectedText: nil, valueIsSettable: nil)
-                }
-
-                guard let selectedTextTimeout = remainingTimeout(context) else {
-                    context.timedOut = true
-                    return .timedOut
-                }
-                AXUIElementSetMessagingTimeout(element, selectedTextTimeout)
-                context.callCount += 1
-                var selectedTextValue: CFTypeRef?
-                let selectedTextError = AXUIElementCopyAttributeValue(
-                    element,
-                    kAXSelectedTextAttribute as CFString,
-                    &selectedTextValue
-                )
-                if selectedTextError == .success {
-                    selectedText = selectedTextValue as? String
-                } else if selectedTextError != .noValue {
-                    recordAccessibilityError(selectedTextError, context: &context)
-                }
-                if context.timedOut { return .timedOut }
-            } else if attributesError != .success {
-                recordAccessibilityError(attributesError, context: &context)
-                return context.timedOut ? .timedOut : .failed(error: Int32(attributesError.rawValue))
-            } else {
-                context.lastError = -1
-                return .failed(error: -1)
+            let key = CFHash(element)
+            if let cached = context.ancestorReads[key]?.first(where: { CFEqual($0.0, element) }) {
+                return cached.1
             }
-
-            var valueIsSettable: Bool?
-            if SelectionTriggerPolicy.editableAXRoles.contains(role ?? ""),
-               role != "AXSecureTextField" {
-                guard let editabilityTimeout = remainingTimeout(context) else {
-                    context.timedOut = true
-                    return .timedOut
-                }
-                AXUIElementSetMessagingTimeout(element, editabilityTimeout)
-                context.callCount += 1
-                var isSettable = DarwinBoolean(false)
-                let editabilityError = AXUIElementIsAttributeSettable(
-                    element,
-                    kAXValueAttribute as CFString,
-                    &isSettable
-                )
-                if editabilityError == .success {
-                    valueIsSettable = isSettable.boolValue
-                } else {
-                    recordAccessibilityError(editabilityError, context: &context)
-                    if context.timedOut { return .timedOut }
-                }
+            let read = readAncestor(element, context: &context)
+            switch read {
+            case .parent, .root:
+                context.ancestorReads[key, default: []].append((element, read))
+            case .failed, .timedOut:
+                break
             }
-
-            if SelectionTriggerPolicy.editableAXRoles.contains(role ?? ""),
-               role == "AXSecureTextField" || valueIsSettable != false {
-                return .root(role: role, selectedText: selectedText, valueIsSettable: valueIsSettable)
-            }
-
-            // Read parent separately so AXError.noValue identifies a real root.
-            // A CFNull parent slot from CopyMultipleAttributeValues is ambiguous.
-            guard let parentTimeout = remainingTimeout(context) else {
-                context.timedOut = true
-                return .timedOut
-            }
-            AXUIElementSetMessagingTimeout(element, parentTimeout)
-            context.callCount += 1
-            var parentValue: CFTypeRef?
-            let parentError = AXUIElementCopyAttributeValue(
-                element,
-                kAXParentAttribute as CFString,
-                &parentValue
-            )
-            if parentError == .success, let parent = axElement(from: parentValue) {
-                return .parent(
-                    role: role,
-                    selectedText: selectedText,
-                    valueIsSettable: valueIsSettable,
-                    node: parent
-                )
-            }
-            if parentError == .noValue
-                || Self.isUnsupportedParentOnApplicationRoot(role, errorCode: Int32(parentError.rawValue)) {
-                return .root(role: role, selectedText: selectedText, valueIsSettable: valueIsSettable)
-            }
-
-            let errorCode = parentError == .success ? -1 : Int32(parentError.rawValue)
-            if parentError == .success {
-                context.lastError = errorCode
-            } else {
-                recordAccessibilityError(parentError, context: &context)
-            }
-            return .failed(error: errorCode)
+            return read
         }
         if inspection.timedOut { context.timedOut = true }
         if let lastError = inspection.lastError { context.lastError = lastError }
@@ -451,7 +329,168 @@ final class SelectionAccessibilityReader: @unchecked Sendable {
         )
     }
 
-    private func processIdentifier(of element: AXUIElement) -> pid_t? {
+    private func readAncestor(
+        _ element: AXUIElement,
+        context: inout RequestContext
+    ) -> SelectionAXAncestorRead<AXUIElement> {
+        guard let timeout = remainingTimeout(context) else {
+            context.timedOut = true
+            return .timedOut
+        }
+        AXUIElementSetMessagingTimeout(element, timeout)
+        context.callCount += 1
+
+        let attributes: CFArray = [
+            kAXRoleAttribute as CFString,
+            kAXSubroleAttribute as CFString,
+            kAXSelectedTextAttribute as CFString
+        ] as CFArray
+        var values: CFArray?
+        let attributesError = AXUIElementCopyMultipleAttributeValues(element, attributes, [], &values)
+        var role: String?
+        var selectedText: String?
+
+        if attributesError == .success,
+           let values = values as? [Any],
+           values.count == 3 {
+            role = SelectionTriggerPolicy.normalizedTextEntryRole(role: values[0] as? String, subrole: values[1] as? String)
+            selectedText = role == "AXSecureTextField" ? nil : values[2] as? String
+        } else if attributesError == .attributeUnsupported {
+            // Some AX providers reject the entire multi-attribute request
+            // when only one attribute (commonly selected text on a
+            // hit-tested Preview group) is unsupported. Read each value
+            // independently so an unsupported selection attribute does
+            // not hide an otherwise safe role and parent chain.
+            recordAccessibilityError(attributesError, context: &context)
+            guard let roleTimeout = remainingTimeout(context) else {
+                context.timedOut = true
+                return .timedOut
+            }
+            AXUIElementSetMessagingTimeout(element, roleTimeout)
+            context.callCount += 1
+            var roleValue: CFTypeRef?
+            let roleError = AXUIElementCopyAttributeValue(
+                element,
+                kAXRoleAttribute as CFString,
+                &roleValue
+            )
+            if roleError == .success {
+                role = roleValue as? String
+            } else if roleError != .noValue {
+                recordAccessibilityError(roleError, context: &context)
+            }
+            if context.timedOut { return .timedOut }
+
+            guard let subroleTimeout = remainingTimeout(context) else {
+                context.timedOut = true
+                return .timedOut
+            }
+            AXUIElementSetMessagingTimeout(element, subroleTimeout)
+            context.callCount += 1
+            var subroleValue: CFTypeRef?
+            let subroleError = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleValue)
+            if subroleError == .success {
+                role = SelectionTriggerPolicy.normalizedTextEntryRole(role: role, subrole: subroleValue as? String)
+            } else if subroleError != .noValue && subroleError != .attributeUnsupported {
+                recordAccessibilityError(subroleError, context: &context)
+            }
+            if context.timedOut { return .timedOut }
+            if role == "AXSecureTextField" {
+                return .root(role: role, selectedText: nil, valueIsSettable: nil)
+            }
+
+            guard let selectedTextTimeout = remainingTimeout(context) else {
+                context.timedOut = true
+                return .timedOut
+            }
+            AXUIElementSetMessagingTimeout(element, selectedTextTimeout)
+            context.callCount += 1
+            var selectedTextValue: CFTypeRef?
+            let selectedTextError = AXUIElementCopyAttributeValue(
+                element,
+                kAXSelectedTextAttribute as CFString,
+                &selectedTextValue
+            )
+            if selectedTextError == .success {
+                selectedText = selectedTextValue as? String
+            } else if selectedTextError != .noValue {
+                recordAccessibilityError(selectedTextError, context: &context)
+            }
+            if context.timedOut { return .timedOut }
+        } else if attributesError != .success {
+            recordAccessibilityError(attributesError, context: &context)
+            return context.timedOut ? .timedOut : .failed(error: Int32(attributesError.rawValue))
+        } else {
+            context.lastError = -1
+            return .failed(error: -1)
+        }
+
+        var valueIsSettable: Bool?
+        if SelectionTriggerPolicy.editableAXRoles.contains(role ?? ""),
+           role != "AXSecureTextField" {
+            guard let editabilityTimeout = remainingTimeout(context) else {
+                context.timedOut = true
+                return .timedOut
+            }
+            AXUIElementSetMessagingTimeout(element, editabilityTimeout)
+            context.callCount += 1
+            var isSettable = DarwinBoolean(false)
+            let editabilityError = AXUIElementIsAttributeSettable(
+                element,
+                kAXValueAttribute as CFString,
+                &isSettable
+            )
+            if editabilityError == .success {
+                valueIsSettable = isSettable.boolValue
+            } else {
+                recordAccessibilityError(editabilityError, context: &context)
+                if context.timedOut { return .timedOut }
+            }
+        }
+
+        if SelectionTriggerPolicy.editableAXRoles.contains(role ?? ""),
+           role == "AXSecureTextField" || valueIsSettable != false {
+            return .root(role: role, selectedText: selectedText, valueIsSettable: valueIsSettable)
+        }
+
+        // Read parent separately so AXError.noValue identifies a real root.
+        // A CFNull parent slot from CopyMultipleAttributeValues is ambiguous.
+        guard let parentTimeout = remainingTimeout(context) else {
+            context.timedOut = true
+            return .timedOut
+        }
+        AXUIElementSetMessagingTimeout(element, parentTimeout)
+        context.callCount += 1
+        var parentValue: CFTypeRef?
+        let parentError = AXUIElementCopyAttributeValue(
+            element,
+            kAXParentAttribute as CFString,
+            &parentValue
+        )
+        if parentError == .success, let parent = axElement(from: parentValue) {
+            return .parent(
+                role: role,
+                selectedText: selectedText,
+                valueIsSettable: valueIsSettable,
+                node: parent
+            )
+        }
+        if parentError == .noValue
+            || Self.isUnsupportedParentOnApplicationRoot(role, errorCode: Int32(parentError.rawValue)) {
+            return .root(role: role, selectedText: selectedText, valueIsSettable: valueIsSettable)
+        }
+
+        let errorCode = parentError == .success ? -1 : Int32(parentError.rawValue)
+        if parentError == .success {
+            context.lastError = errorCode
+        } else {
+            recordAccessibilityError(parentError, context: &context)
+        }
+        return .failed(error: errorCode)
+    }
+
+    private func processIdentifier(of element: AXUIElement, context: inout RequestContext) -> pid_t? {
+        guard hasTime(context) else { return nil }
         var processIdentifier: pid_t = 0
         guard AXUIElementGetPid(element, &processIdentifier) == .success else { return nil }
         return processIdentifier

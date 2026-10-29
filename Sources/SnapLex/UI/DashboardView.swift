@@ -370,7 +370,7 @@ private struct DashboardHomeView: View {
         }
         .background(SnapLexTheme.toolbarBackground(for: colorScheme))
         .snapLexAppearance()
-        .task(id: translations.revision) { await historyOverview.load(store: translations) }
+        .task(id: translations.revision) { await historyOverview.load(store: translations, scope: .dashboard) }
     }
 
     private var dashboardCardBackground: some ShapeStyle {
@@ -510,8 +510,11 @@ private struct DashboardScreenshotTile: View {
         }
         .buttonStyle(SnapLexPressButtonStyle())
         .task(id: record.id) {
-            image = await ScreenshotThumbnailLoader.load(for: record.fileURL)
+            let loaded = await ScreenshotThumbnailLoader.load(for: record.fileURL)
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
+        .onDisappear { image = nil }
     }
 }
 

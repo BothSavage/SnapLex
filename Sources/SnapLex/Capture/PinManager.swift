@@ -6,9 +6,111 @@ import Translation
 
 public struct PinHistoryRecord: Identifiable {
     public let id = UUID()
-    public let image: NSImage
+    public var image: NSImage { storage.loadImage() ?? NSImage(size: storage.imageSize) }
     public let frame: NSRect
     public let closedAt: Date
+    fileprivate let storage: ClosedPinImage
+
+    @MainActor
+    init(image: NSImage, frame: NSRect, closedAt: Date) {
+        self.storage = ClosedPinImage(image)
+        self.frame = frame
+        self.closedAt = closedAt
+    }
+}
+
+/// Private backing cannot be invalidated by screenshot-history deletion or
+/// retention. The serial queue orders writes, restores, and cleanup.
+fileprivate final class ClosedPinImage: @unchecked Sendable {
+    static let ioQueue = DispatchQueue(label: "io.github.snaplex.closed-pins", qos: .utility)
+    let imageSize: NSSize
+    let decodedBytes: Int
+    private let lock = NSLock()
+    private var residentImage: NSImage?
+    private var isSpilling = false
+    private let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("SnapLex-ClosedPin-\(UUID().uuidString)", isDirectory: true)
+    private var terminationObserver: NSObjectProtocol?
+
+    @MainActor
+    init(_ image: NSImage) {
+        imageSize = image.size
+        residentImage = image
+        // Account for all bitmap representations, including Retina images.
+        let bitmapBytes = image.representations.compactMap { $0 as? NSBitmapImageRep }.reduce(0) { total, rep in
+            let bytes = rep.bytesPerRow.multipliedReportingOverflow(by: rep.pixelsHigh)
+            let sum = total.addingReportingOverflow(bytes.overflow ? Int.max : bytes.partialValue)
+            return sum.overflow ? Int.max : sum.partialValue
+        }
+        let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        let cgBytes = cgImage.map { $0.bytesPerRow.multipliedReportingOverflow(by: $0.height) }
+        decodedBytes = max(bitmapBytes, cgBytes.map { $0.overflow ? Int.max : $0.partialValue } ?? Int.max)
+        let directory = directory
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
+        ) { _ in
+            Self.ioQueue.sync { try? FileManager.default.removeItem(at: directory) }
+        }
+    }
+
+    deinit {
+        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
+        let directory = directory
+        Self.ioQueue.async { try? FileManager.default.removeItem(at: directory) }
+    }
+
+    var residentBytes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return residentImage == nil ? 0 : decodedBytes
+    }
+
+    @MainActor
+    func spillToDisk() {
+        lock.lock()
+        guard !isSpilling, let image = residentImage else { lock.unlock(); return }
+        isSpilling = true
+        lock.unlock()
+        guard let snapshot = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            lock.lock()
+            isSpilling = false
+            lock.unlock()
+            return
+        }
+        Self.ioQueue.async { [self] in
+            let saved = autoreleasepool { () -> Bool in
+                do {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    let url = directory.appendingPathComponent("image.png")
+                    guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+                        return false
+                    }
+                    CGImageDestinationAddImage(destination, snapshot, nil)
+                    return CGImageDestinationFinalize(destination)
+                } catch { return false }
+            }
+            lock.lock()
+            // Keep the original on write failure; never silently lose a pin.
+            if saved { residentImage = nil }
+            isSpilling = false
+            lock.unlock()
+        }
+    }
+
+    /// Call on the I/O queue for restores. The public image accessor remains
+    /// synchronous for compatibility, but does not cache decoded disk images.
+    func loadImage() -> NSImage? {
+        lock.lock()
+        let image = residentImage
+        lock.unlock()
+        if let image { return image }
+        let url = directory.appendingPathComponent("image.png")
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: image, size: imageSize)
+    }
 }
 
 // MARK: - Instant 0ms Hover Tooltip Buttons (Pure Black & White Monochrome Style)
@@ -291,7 +393,26 @@ public final class PinManager: ObservableObject {
     @Published public private(set) var closedHistory: [PinHistoryRecord] = []
     @Published public var allPinsHidden: Bool = false
 
+    // Retain at most 64 MiB of decoded closed-pin images, with images over
+    // 16 MiB and all but the two most recent records backed by private PNGs.
+    private let closedImageByteBudget = 64 * 1_024 * 1_024
+    private let closedImageIndividualLimit = 16 * 1_024 * 1_024
+
     private init() {}
+
+    private func rememberClosedPin(_ window: PinnedImageWindow) {
+        let record = PinHistoryRecord(image: window.originalImage, frame: window.frame, closedAt: Date())
+        closedHistory = RecentHistoryPolicy.inserting(record, into: closedHistory, limit: 25)
+        var remaining = closedImageByteBudget
+        for (index, record) in closedHistory.enumerated() {
+            let bytes = record.storage.residentBytes
+            if index >= 2 || bytes > closedImageIndividualLimit || bytes > remaining {
+                record.storage.spillToDisk()
+            } else {
+                remaining -= bytes
+            }
+        }
+    }
 
     public func applyAppearance(_ appearance: NSAppearance?) {
         activePins.forEach { $0.applyAppearance(appearance) }
@@ -370,9 +491,9 @@ public final class PinManager: ObservableObject {
     }
 
     public func closePin(_ window: PinnedImageWindow) {
+        guard activePins.contains(where: { $0 === window }) else { return }
         window.cleanupCompanionWindows()
-        let record = PinHistoryRecord(image: window.originalImage, frame: window.frame, closedAt: Date())
-        closedHistory = RecentHistoryPolicy.inserting(record, into: closedHistory, limit: 25)
+        rememberClosedPin(window)
         window.orderOut(nil)
         activePins.removeAll { $0 === window }
     }
@@ -380,7 +501,18 @@ public final class PinManager: ObservableObject {
     public func restoreLastClosedPin() {
         guard !closedHistory.isEmpty else { return }
         let record = closedHistory.removeFirst()
-        pinImage(record.image, at: record.frame)
+        // Decode and publish in one FIFO, so repeated restore shortcuts cannot
+        // reorder windows when a large image takes longer to decode.
+        ClosedPinImage.ioQueue.async { [recordStorage = record.storage, recordFrame = record.frame] in
+            let image = recordStorage.loadImage()
+            DispatchQueue.main.async { [self] in
+                guard let image else { NSSound.beep(); return }
+                let window = pinImage(image, at: recordFrame)
+                // pinImage applies minimum dimensions; restores preserve even
+                // a closed thumbnail's exact frame.
+                window.setFrame(recordFrame, display: true)
+            }
+        }
     }
 
     public func toggleHideAllPins() {
@@ -405,8 +537,7 @@ public final class PinManager: ObservableObject {
     public func closeAllPins() {
         for pin in activePins {
             pin.cleanupCompanionWindows()
-            let record = PinHistoryRecord(image: pin.originalImage, frame: pin.frame, closedAt: Date())
-            closedHistory = RecentHistoryPolicy.inserting(record, into: closedHistory, limit: 25)
+            rememberClosedPin(pin)
             pin.orderOut(nil)
         }
         activePins.removeAll()
@@ -740,7 +871,11 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
     }
 
     public func cleanupCompanionWindows() {
+        viewModel.close()
+        imageEffectTask?.cancel()
+        imageEffectTask = nil
         hideToolbarTask?.cancel()
+        hideToolbarTask = nil
         if let bar = outerToolbarPanel {
             if bar.parent != nil { removeChildWindow(bar) }
             bar.orderOut(nil)
@@ -783,11 +918,9 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
     }
 
     public func toggleInPlaceTranslation() {
+        guard !viewModel.isClosed else { return }
         if viewModel.isInPlaceTranslated {
-            viewModel.pendingTranslationID = nil
-            viewModel.translationConfiguration = nil
-            viewModel.isTranslatingInPlace = false
-            viewModel.isInPlaceTranslated = false
+            viewModel.cancelInPlaceTranslation()
             viewModel.rebuildDisplayedImage()
             viewModel.showHUD(L10n.string("已还原原图"))
             return
@@ -806,23 +939,28 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
 
         viewModel.isTranslatingInPlace = true
         viewModel.showHUD(L10n.string("正在原位识别并贴合翻译..."))
-        let srcImg = viewModel.displayedImage
+        let vm = viewModel
+        let srcImg = vm.originalImage
         let requestID = UUID()
-        viewModel.pendingTranslationID = requestID
-        Task { @MainActor in
-            let blocks = await InPlaceOCRService.shared.recognizeBlocks(in: srcImg)
-            guard self.viewModel.pendingTranslationID == requestID else { return }
+        let generation = vm.ocrGeneration
+        let recognition = vm.sharedRecognition()
+        vm.pendingTranslationID = requestID
+        vm.inPlaceTask = Task { @MainActor [weak vm] in
+            let blocks = await recognition.value
+            guard !Task.isCancelled, let vm,
+                  vm.pendingTranslationID == requestID,
+                  vm.acceptRecognition(blocks, generation: generation) else { return }
             guard !blocks.isEmpty else {
-                self.viewModel.isTranslatingInPlace = false
-                self.viewModel.isInPlaceTranslated = false
-                self.viewModel.showHUD(L10n.string("未识别到文本"))
+                vm.isTranslatingInPlace = false
+                vm.isInPlaceTranslated = false
+                vm.showHUD(L10n.string("未识别到文本"))
                 return
             }
 
-            self.viewModel.pendingTranslationBlocks = blocks
-            self.viewModel.pendingTranslationImage = srcImg
-            if self.viewModel.ocrSidebarText.isEmpty {
-                self.viewModel.ocrSidebarText = blocks.map(\.originalText).joined(separator: "\n")
+            vm.pendingTranslationBlocks = blocks
+            vm.pendingTranslationImage = srcImg
+            if vm.ocrSidebarText.isEmpty {
+                vm.ocrSidebarText = blocks.map(\.originalText).joined(separator: "\n")
             }
             let text = blocks.map(\.originalText).joined(separator: "\n")
             let targetCode = NativeTranslationSupport.preferredTargetCode(for: text)
@@ -830,21 +968,20 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                 in: blocks.map(\.originalText),
                 excluding: targetCode
             )
-            self.viewModel.pendingTranslationSourceCodes = Array(sourceCodes.dropFirst())
-            self.viewModel.pendingTranslationTargetCode = targetCode
+            vm.pendingTranslationSourceCodes = Array(sourceCodes.dropFirst())
+            vm.pendingTranslationTargetCode = targetCode
             guard let sourceCode = sourceCodes.first else {
-                self.viewModel.isTranslatingInPlace = false
-                self.viewModel.isInPlaceTranslated = false
-                self.viewModel.showHUD(L10n.string("识别到的文字已是目标语言"))
+                vm.isTranslatingInPlace = false
+                vm.isInPlaceTranslated = false
+                vm.showHUD(L10n.string("识别到的文字已是目标语言"))
                 return
             }
-            self.viewModel.pendingTranslationSourceCode = sourceCode
+            vm.pendingTranslationSourceCode = sourceCode
 
             if AppSettings.shared.translationEngine == .google {
-                self.viewModel.translationConfiguration = nil
+                vm.translationConfiguration = nil
                 let targetLabel = AppSettings.targetLanguages.first(where: { $0.code == targetCode })?.label ?? "简体中文"
-                Task { @MainActor in
-                    do {
+                do {
                         let indicesToTranslate = blocks.indices.filter {
                             NativeTranslationSupport.sourceLanguageCode(for: blocks[$0].originalText) != targetCode
                         }
@@ -852,67 +989,44 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                             texts: indicesToTranslate.map { blocks[$0].originalText },
                             targetLanguage: targetLabel
                         )
-                        guard self.viewModel.pendingTranslationID == requestID else { return }
+                        guard vm.pendingTranslationID == requestID else { return }
                         var translatedBlocks = blocks
                         for (translationIndex, blockIndex) in indicesToTranslate.enumerated() {
                             translatedBlocks[blockIndex].translatedText = translated.indices.contains(translationIndex)
                                 ? translated[translationIndex]
                                 : translatedBlocks[blockIndex].originalText
                         }
-                        self.completeInPlaceTranslation(
+                        vm.completeInPlaceTranslation(
                             translatedBlocks,
                             sourceImage: srcImg,
                             requestID: requestID
                         )
-                    } catch {
-                        guard !Task.isCancelled, self.viewModel.pendingTranslationID == requestID else { return }
+                } catch {
+                        guard !Task.isCancelled, vm.pendingTranslationID == requestID else { return }
                         // Reuse the pending OCR blocks and the native multi-language
                         // pipeline when Google is unavailable or rate limited.
-                        self.viewModel.translationConfiguration = NativeTranslationSupport.makeConfiguration(
+                        vm.translationConfiguration = NativeTranslationSupport.makeConfiguration(
                             source: sourceCode,
                             target: targetCode
                         )
-                    }
                 }
                 return
             }
 
             let source = Locale.Language(identifier: sourceCode)
             let target = Locale.Language(identifier: targetCode)
-            if var configuration = self.viewModel.translationConfiguration,
+            if var configuration = vm.translationConfiguration,
                configuration.source == source,
                configuration.target == target {
                 configuration.invalidate()
-                self.viewModel.translationConfiguration = configuration
+                vm.translationConfiguration = configuration
             } else {
-                self.viewModel.translationConfiguration = NativeTranslationSupport.makeConfiguration(
+                vm.translationConfiguration = NativeTranslationSupport.makeConfiguration(
                     source: sourceCode,
                     target: targetCode
                 )
             }
         }
-    }
-
-    private func completeInPlaceTranslation(
-        _ blocks: [OCRTextBlock],
-        sourceImage: NSImage,
-        requestID: UUID?
-    ) {
-        guard viewModel.pendingTranslationID == requestID else { return }
-        let originalText = blocks.map(\.originalText).joined(separator: "\n")
-        let translatedText = blocks.map(\.translatedText).joined(separator: "\n")
-        viewModel.recordCompletedScreenshotTranslation(blocks: blocks)
-        let renderedImage = InPlaceOCRService.renderTranslatedBlocksOnImage(baseImage: sourceImage, blocks: blocks)
-        viewModel.cachedInPlaceResult = InPlaceOCRResult(
-            blocks: blocks,
-            fullOriginalText: originalText,
-            fullTranslatedText: translatedText,
-            renderedTranslatedImage: renderedImage
-        )
-        viewModel.ocrBlocks = blocks
-        viewModel.isTranslatingInPlace = false
-        viewModel.rebuildDisplayedImage()
-        viewModel.showHUD(L10n.string("✓ 原位翻译完成"))
     }
 
     // MARK: - Image 1 Mode: Right-Side OCR Text Drawer (`[文]`)
@@ -924,6 +1038,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
     }
 
     public func toggleOCRSidebar() {
+        guard !viewModel.isClosed else { return }
         viewModel.showOCRSidebar.toggle()
 
         var f = frame
@@ -939,16 +1054,13 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
             self.showAndPositionOuterToolbar(forceReposition: true)
         }
 
-        if viewModel.showOCRSidebar && viewModel.ocrSidebarText.isEmpty {
-            viewModel.isExtractingOCR = true
-            let srcImg = viewModel.displayedImage
-            Task { @MainActor in
-                let blocks = await InPlaceOCRService.shared.recognizeBlocks(in: srcImg)
-                self.viewModel.ocrBlocks = blocks
-                let fullText = blocks.map(\.originalText).joined(separator: "\n")
-                self.viewModel.ocrSidebarText = fullText.isEmpty ? L10n.string("（未在图中识别到文本）") : fullText
-                self.viewModel.isExtractingOCR = false
-            }
+        if viewModel.showOCRSidebar {
+            viewModel.startSidebarRecognitionIfNeeded()
+        } else {
+            viewModel.sidebarTask?.cancel()
+            viewModel.sidebarTask = nil
+            viewModel.isExtractingOCR = false
+            viewModel.cancelUnusedRecognition()
         }
     }
 
@@ -1052,18 +1164,14 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         let sourceImage = viewModel.originalImage
 
         imageEffectTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.imageEffectTask = nil }
-
             do {
                 let processed = try await VisionImageEffectsService.shared.apply(effect, to: sourceImage)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, let self, !self.viewModel.isClosed else { return }
+                defer { self.imageEffectTask = nil }
+                self.viewModel.invalidateOCRSource()
                 self.originalImage = processed
                 self.viewModel.originalImage = processed
-                self.viewModel.isInPlaceTranslated = false
-                self.viewModel.isTranslatingInPlace = false
-                self.viewModel.pendingTranslationID = UUID()
-                self.viewModel.cachedInPlaceResult = nil
+                self.viewModel.startSidebarRecognitionIfNeeded()
                 if effect == .extractSubject {
                     self.viewModel.hasWindowShadow = false
                     self.hasShadow = false
@@ -1072,6 +1180,8 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                 self.viewModel.rebuildDisplayedImage()
                 self.viewModel.showHUD(effect.completionMessage)
             } catch {
+                guard !Task.isCancelled, let self, !self.viewModel.isClosed else { return }
+                self.imageEffectTask = nil
                 self.viewModel.showHUD(
                     (error as? VisionImageEffectsError)?.errorDescription ?? L10n.string("无法生成图片效果。")
                 )
@@ -1299,6 +1409,94 @@ fileprivate final class PinnedWindowViewModel: ObservableObject {
     @Published var ocrSidebarText: String = ""
     @Published var showTranslatedInSidebar: Bool = false
     var ocrBlocks: [OCRTextBlock] = []
+    private(set) var isClosed = false
+    private(set) var ocrGeneration = UUID()
+    private var recognizedBlocks: [OCRTextBlock]?
+    private var recognitionTask: Task<[OCRTextBlock], Never>?
+    var sidebarTask: Task<Void, Never>?
+    var inPlaceTask: Task<Void, Never>?
+
+    /// Both consumers recognize the untransformed source. Rendering applies
+    /// rotation/mirroring afterwards, including to a translated image.
+    func sharedRecognition() -> Task<[OCRTextBlock], Never> {
+        if let recognizedBlocks { return Task { recognizedBlocks } }
+        if let recognitionTask { return recognitionTask }
+        let image = originalImage
+        let task = Task { @MainActor in
+            await InPlaceOCRService.shared.recognizeBlocks(in: image)
+        }
+        recognitionTask = task
+        return task
+    }
+
+    func acceptRecognition(_ blocks: [OCRTextBlock], generation: UUID) -> Bool {
+        guard !isClosed, ocrGeneration == generation else { return false }
+        recognizedBlocks = blocks
+        recognitionTask = nil
+        return true
+    }
+
+    func startSidebarRecognitionIfNeeded() {
+        guard !isClosed, showOCRSidebar, ocrSidebarText.isEmpty, sidebarTask == nil else { return }
+        isExtractingOCR = true
+        let generation = ocrGeneration
+        let recognition = sharedRecognition()
+        sidebarTask = Task { @MainActor [weak self] in
+            let blocks = await recognition.value
+            guard !Task.isCancelled, let self, self.showOCRSidebar,
+                  self.acceptRecognition(blocks, generation: generation) else { return }
+            self.sidebarTask = nil
+            if self.cachedInPlaceResult == nil { self.ocrBlocks = blocks }
+            // Translation or an edit may have supplied text while OCR ran.
+            if self.ocrSidebarText.isEmpty {
+                let fullText = blocks.map(\.originalText).joined(separator: "\n")
+                self.ocrSidebarText = fullText.isEmpty ? L10n.string("（未在图中识别到文本）") : fullText
+            }
+            self.isExtractingOCR = false
+        }
+    }
+
+    func cancelInPlaceTranslation() {
+        pendingTranslationID = nil
+        translationConfiguration = nil
+        inPlaceTask?.cancel()
+        inPlaceTask = nil
+        pendingTranslationBlocks = []
+        pendingTranslationImage = nil
+        pendingTranslationSourceCodes = []
+        isTranslatingInPlace = false
+        isInPlaceTranslated = false
+        cancelUnusedRecognition()
+    }
+
+    func cancelUnusedRecognition() {
+        guard !showOCRSidebar, !isInPlaceTranslated else { return }
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        ocrGeneration = UUID()
+    }
+
+    func invalidateOCRSource() {
+        cancelInPlaceTranslation()
+        sidebarTask?.cancel()
+        sidebarTask = nil
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        ocrGeneration = UUID()
+        recognizedBlocks = nil
+        cachedInPlaceResult = nil
+        ocrBlocks = []
+        ocrSidebarText = ""
+        showTranslatedInSidebar = false
+        isExtractingOCR = false
+    }
+
+    func close() {
+        isClosed = true
+        invalidateOCRSource()
+        hudTask?.cancel()
+        hudTask = nil
+    }
 
     @Published var hudMessage: String? = nil
     private var hudTask: Task<Void, Never>?
@@ -1306,6 +1504,28 @@ fileprivate final class PinnedWindowViewModel: ObservableObject {
     init(originalImage: NSImage) {
         self.originalImage = originalImage
         self.displayedImage = originalImage
+    }
+
+    func completeInPlaceTranslation(
+        _ blocks: [OCRTextBlock],
+        sourceImage: NSImage,
+        requestID: UUID?
+    ) {
+        guard !isClosed, !Task.isCancelled, let requestID, pendingTranslationID == requestID else { return }
+        let originalText = blocks.map(\.originalText).joined(separator: "\n")
+        let translatedText = blocks.map(\.translatedText).joined(separator: "\n")
+        recordCompletedScreenshotTranslation(blocks: blocks)
+        let renderedImage = InPlaceOCRService.renderTranslatedBlocksOnImage(baseImage: sourceImage, blocks: blocks)
+        cachedInPlaceResult = InPlaceOCRResult(
+            blocks: blocks,
+            fullOriginalText: originalText,
+            fullTranslatedText: translatedText,
+            renderedTranslatedImage: renderedImage
+        )
+        ocrBlocks = blocks
+        isTranslatingInPlace = false
+        rebuildDisplayedImage()
+        showHUD(L10n.string("✓ 原位翻译完成"))
     }
 
     func recordCompletedScreenshotTranslation(blocks: [OCRTextBlock]) {
@@ -1883,7 +2103,7 @@ private struct PinnedImageRootView: View {
         } else {
             vm.currentDraftAnnotation?.endPoint = curr
             if vm.activeTool == .pencil || vm.activeTool == .marker {
-                vm.currentDraftAnnotation?.points.append(curr)
+                vm.currentDraftAnnotation?.appendFreehandPoint(curr)
             }
         }
     }
@@ -2051,15 +2271,11 @@ private struct PinnedImageRootView: View {
             }
         case .pencil:
             guard item.points.count > 1 else { break }
-            var path = Path()
-            path.move(to: item.points[0])
-            for p in item.points.dropFirst() { path.addLine(to: p) }
+            let path = Path(item.freehandPath)
             context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: item.lineWidth, lineCap: .round, lineJoin: .round))
         case .marker:
             guard item.points.count > 1 else { break }
-            var path = Path()
-            path.move(to: item.points[0])
-            for p in item.points.dropFirst() { path.addLine(to: p) }
+            let path = Path(item.freehandPath)
             context.stroke(path, with: .color(color.opacity(0.36)), style: StrokeStyle(lineWidth: max(14, item.lineWidth * 3.5), lineCap: .butt, lineJoin: .round))
         case .mosaic, .blur:
             let path = Path(rect)

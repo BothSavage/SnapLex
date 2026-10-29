@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class DashboardLayoutStabilityTests: XCTestCase {
-    func testEveryDashboardRouteKeepsAppKitFramesFiniteAndNonnegative() {
+    func testEveryDashboardRouteKeepsAppKitFramesFiniteAndNonnegative() async {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnapLex-DashboardLayout-\(UUID().uuidString)", isDirectory: true)
         let translationStore = TranslationHistoryStore(
@@ -17,6 +17,7 @@ final class DashboardLayoutStabilityTests: XCTestCase {
             directoryURL: temporaryRoot.appendingPathComponent("screenshots", isDirectory: true),
             retentionLimit: { 10 }
         )
+        await translationStore.waitForPendingWrites()
         let navigation = DashboardNavigation()
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
 
@@ -35,7 +36,7 @@ final class DashboardLayoutStabilityTests: XCTestCase {
             // layout work settle before auditing the native view tree.
             for _ in 0..<8 {
                 host.layoutSubtreeIfNeeded()
-                RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+                try? await Task.sleep(nanoseconds: 20_000_000)
             }
 
             let invalidFrames = Self.invalidFrames(in: host)

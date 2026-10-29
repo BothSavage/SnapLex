@@ -32,7 +32,8 @@ public final class InPlaceOCRService: @unchecked Sendable {
     /// Step 1: Recognize text blocks with bounding boxes from an NSImage, merging lines into natural paragraph blocks
     @MainActor
     public func recognizeBlocks(in image: NSImage) async -> [OCRTextBlock] {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        guard !Task.isCancelled,
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return []
         }
 

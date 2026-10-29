@@ -35,17 +35,18 @@ enum SelectionDirectCaptureFlow {
         hasAccessibilityPermission: @MainActor () -> Bool,
         foregroundProcessIdentifier: @MainActor () -> pid_t?,
         readAccessibility: @MainActor () async -> SelectionAXSnapshot,
-        synthesizeCopy: @MainActor () async -> String?
+        synthesizeCopy: @MainActor () async -> String?,
+        isCurrentRequest: @MainActor () -> Bool = { true }
     ) async -> SelectionDirectCaptureOutcome {
         guard sourceProcessIdentifier != ownProcessIdentifier else {
             return .suppressed(.snapLexIsFrontmost, nil)
         }
-        guard foregroundProcessIdentifier() == sourceProcessIdentifier else {
+        guard !Task.isCancelled, isCurrentRequest(), foregroundProcessIdentifier() == sourceProcessIdentifier else {
             return .cancelledBeforeAccessibility
         }
 
         let snapshot = await readAccessibility()
-        guard foregroundProcessIdentifier() == sourceProcessIdentifier else {
+        guard !Task.isCancelled, isCurrentRequest(), foregroundProcessIdentifier() == sourceProcessIdentifier else {
             return .cancelledAfterAccessibility(snapshot)
         }
 
@@ -88,14 +89,14 @@ enum SelectionDirectCaptureFlow {
         ) else {
             return .suppressed(.unsafeSyntheticCopy, snapshot)
         }
-        guard foregroundProcessIdentifier() == sourceProcessIdentifier else {
+        guard !Task.isCancelled, isCurrentRequest(), foregroundProcessIdentifier() == sourceProcessIdentifier else {
             return .cancelledBeforeSyntheticCopy(snapshot)
         }
 
         guard let copied = await synthesizeCopy() else {
             return .suppressed(.copyDidNotProduceText, snapshot)
         }
-        guard foregroundProcessIdentifier() == sourceProcessIdentifier else {
+        guard !Task.isCancelled, isCurrentRequest(), foregroundProcessIdentifier() == sourceProcessIdentifier else {
             return .cancelledAfterSyntheticCopy(snapshot)
         }
         let normalizedCopy = copied.trimmingCharacters(in: .whitespacesAndNewlines)

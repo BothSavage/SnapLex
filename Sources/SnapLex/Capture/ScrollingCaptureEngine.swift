@@ -35,9 +35,9 @@ public final class ScrollingCaptureEngine: ObservableObject {
     private var lastScrollEventTime: TimeInterval = 0
 
     // Bidirectional stitching state
-    private var masterCGImage: CGImage?
+    private var stitchedImage: StripImage?
     private var lastFrameCGImage: CGImage?
-    /// Tracks where the top of `lastFrameCGImage` sits inside `masterCGImage` (in pixels from top)
+    /// Tracks the last viewport's top inside the stitched strips (pixels from top).
     private var currentViewportTopInMaster: Int = 0
     private var isProcessingFrame: Bool = false
     private var captureGeneration = UUID()
@@ -85,7 +85,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
             height: normalizedRect.height
         )
 
-        self.masterCGImage = nil
+        self.stitchedImage = nil
         self.lastFrameCGImage = nil
         self.currentViewportTopInMaster = 0
         self.previewImage = nil
@@ -240,11 +240,28 @@ public final class ScrollingCaptureEngine: ObservableObject {
     }
 
     public func finishScrollingCapture() {
-        let finalImg = previewImage
+        guard isCaptureActive else { return }
+        let finalStrips = stitchedImage
         let rect = targetScreenRect
+        let scale = max(1, backingScale)
         stopTimersAndWindows()
 
-        guard let img = finalImg else { return }
+        // A completed export owns its snapshot independently of later sessions.
+        // Starting a new capture must not discard an already accepted Finish.
+        stitchingQueue.async { [weak self] in
+            let flattened = autoreleasepool { finalStrips?.flattened() }
+            DispatchQueue.main.async {
+                guard let self, let flattened else { return }
+                let img = NSImage(cgImage: flattened, size: NSSize(
+                    width: CGFloat(flattened.width) / scale,
+                    height: CGFloat(flattened.height) / scale
+                ))
+                self.publishFinishedCapture(img, near: rect)
+            }
+        }
+    }
+
+    private func publishFinishedCapture(_ img: NSImage, near rect: CGRect) {
         ScreenshotHistoryStore.shared.saveInBackground(img)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([img])
@@ -273,7 +290,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
         isCaptureActive = false
         captureGeneration = UUID()
         isProcessingFrame = false
-        masterCGImage = nil
+        stitchedImage = nil
         lastFrameCGImage = nil
         previewImage = nil
         isAutoScrolling = false
@@ -312,14 +329,14 @@ public final class ScrollingCaptureEngine: ObservableObject {
         isProcessingFrame = true
         let generation = captureGeneration
         let rect = targetQuartzRect
-        let master = masterCGImage
+        let master = stitchedImage
         let previous = lastFrameCGImage
         let viewportTop = currentViewportTopInMaster
         stitchingQueue.async { [weak self] in
-            let result: SliceResult? = autoreleasepool {
+            let result: StripSliceResult? = autoreleasepool {
                 guard let slice = capture(rect, .optionOnScreenOnly, kCGNullWindowID, .bestResolution)?.takeRetainedValue(),
                       slice.width >= 64, slice.height >= 80 else { return nil }
-                return Self.processSlice(slice, master: master, previous: previous, viewportTop: viewportTop)
+                return Self.processStripSlice(slice, master: master, previous: previous, viewportTop: viewportTop)
             }
             DispatchQueue.main.async {
                 // A cancelled/restarted session must never publish old frames
@@ -331,7 +348,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
                     self.stopAutoScroll(reason: L10n.string("已达到长截图内存上限，请完成当前截图"))
                     return
                 }
-                self.masterCGImage = result.master
+                self.stitchedImage = result.master
                 self.lastFrameCGImage = result.lastFrame
                 self.currentViewportTopInMaster = result.viewportTop
                 if result.reset {
@@ -346,7 +363,11 @@ public final class ScrollingCaptureEngine: ObservableObject {
                 }
                 if result.reset || result.extended {
                     self.stitchedPixelHeight = result.master.height
-                    self.updatePreviewImage(from: result.master)
+                    if let preview = result.preview {
+                        self.previewImage = NSImage(cgImage: preview, size: NSSize(
+                            width: preview.width, height: preview.height
+                        ))
+                    }
                 }
             }
         }
@@ -363,7 +384,7 @@ public final class ScrollingCaptureEngine: ObservableObject {
     }
 
     nonisolated static func canAllocateStitchedBitmap(width: Int, height: Int) -> Bool {
-        // Stitching retains the previous image while allocating the next one.
+        // Cap full-resolution storage and the one-time final flatten allocation.
         // A height limit alone permits gigabyte allocations on wide displays.
         guard width > 0, height > 0, height <= 36_000 else { return false }
         let (rowBytes, rowOverflow) = width.multipliedReportingOverflow(by: 4)
@@ -371,39 +392,214 @@ public final class ScrollingCaptureEngine: ObservableObject {
         return !rowOverflow && !sizeOverflow && bytes <= 128 * 1024 * 1024
     }
 
+    /// Compatibility entry point for callers that already own a flat bitmap.
+    /// The live capture path uses `processStripSlice` and never flattens here.
     nonisolated static func processSlice(
         _ slice: CGImage, master: CGImage?, previous: CGImage?, viewportTop: Int
     ) -> SliceResult? {
-        guard let master, let previous,
+        let strips = master.flatMap { StripImage(image: $0) }
+        guard let result = processStripSlice(slice, master: strips, previous: previous, viewportTop: viewportTop),
+              let flattened = result.master.flattened() else { return nil }
+        return SliceResult(
+            master: flattened, lastFrame: result.lastFrame, viewportTop: result.viewportTop,
+            reset: result.reset, extended: result.extended, upward: result.upward,
+            reachedMemoryLimit: result.reachedMemoryLimit
+        )
+    }
+
+    private struct StripSliceResult {
+        let master: StripImage
+        let lastFrame: CGImage
+        let viewportTop: Int
+        var reset = false
+        var extended = false
+        var upward = false
+        var reachedMemoryLimit = false
+        var preview: CGImage?
+    }
+
+    private nonisolated static func processStripSlice(
+        _ slice: CGImage, master: StripImage?, previous: CGImage?, viewportTop: Int
+    ) -> StripSliceResult? {
+        guard let master, let previous, master.width == slice.width,
               previous.width == slice.width, previous.height == slice.height else {
-            return SliceResult(master: slice, lastFrame: slice, viewportTop: 0, reset: true)
+            guard let initial = StripImage(image: slice) else { return nil }
+            return StripSliceResult(master: initial, lastFrame: slice, viewportTop: 0,
+                                    reset: true, preview: initial.preview())
         }
+        // Registration and verification depend only on consecutive viewports.
+        // The master is used exclusively for seam replacement and size accounting.
         guard let match = findVerifiedBidirectional2DScrollMatch(prev: previous, curr: slice) else { return nil }
         let newViewportTop = viewportTop + match.signedDeltaRows
         let seamInMaster = viewportTop + match.seamRowInPrev
         let seamInNew = match.seamRowInPrev - match.signedDeltaRows
         let targetHeight = newViewportTop < 0 ? master.height - newViewportTop : newViewportTop + slice.height
         if targetHeight > master.height, !canAllocateStitchedBitmap(width: master.width, height: targetHeight) {
-            return SliceResult(master: master, lastFrame: previous, viewportTop: viewportTop, reachedMemoryLimit: true)
+            return StripSliceResult(master: master, lastFrame: previous, viewportTop: viewportTop, reachedMemoryLimit: true)
         }
         if newViewportTop + slice.height > master.height {
-            guard let stitched = stitchBottomExtension(
-                master: master, newSlice: slice, seamRowInMaster: seamInMaster, seamRowInNew: seamInNew
-            ) else { return nil }
-            return SliceResult(master: stitched, lastFrame: slice, viewportTop: newViewportTop, extended: true)
+            guard seamInMaster >= 16, slice.height - seamInNew >= 16,
+                  let stitched = master.replacingBottom(from: seamInMaster, with: slice, from: seamInNew) else { return nil }
+            return StripSliceResult(master: stitched, lastFrame: slice, viewportTop: newViewportTop,
+                                    extended: true, preview: stitched.preview())
         } else if newViewportTop < 0 {
-            guard let stitched = stitchTopExtension(
-                master: master, newSlice: slice, seamRowInMaster: seamInMaster, seamRowInNew: seamInNew
-            ) else { return nil }
-            return SliceResult(master: stitched, lastFrame: slice, viewportTop: 0, extended: true, upward: true)
+            guard seamInNew >= 16, master.height - seamInMaster >= 16,
+                  let stitched = master.replacingTop(through: seamInMaster, with: slice, through: seamInNew) else { return nil }
+            return StripSliceResult(master: stitched, lastFrame: slice, viewportTop: 0,
+                                    extended: true, upward: true, preview: stitched.preview())
         }
-        return SliceResult(master: master, lastFrame: slice, viewportTop: newViewportTop)
+        return StripSliceResult(master: master, lastFrame: slice, viewportTop: newViewportTop)
     }
 
-    private func updatePreviewImage(from master: CGImage) {
-        let scale = max(1.0, backingScale)
-        let masterSize = NSSize(width: CGFloat(master.width) / scale, height: CGFloat(master.height) / scale)
-        self.previewImage = NSImage(cgImage: master, size: masterSize)
+    /// Ordered, top-to-bottom, independently owned strips. Crops are copied into
+    /// at most 512-row bitmaps so a tiny retained crop cannot keep a viewport or
+    /// discarded seam region alive. Only a boundary strip and incoming rows are
+    /// rasterized on extension; all untouched strips share immutable CGImages.
+    private struct StripImage {
+        let width: Int
+        let height: Int
+        let strips: [CGImage]
+        let colorSpace: CGColorSpace
+
+        nonisolated init?(image: CGImage) {
+            guard ScrollingCaptureEngine.canAllocateStitchedBitmap(width: image.width, height: image.height),
+                  let strips = Self.copyStrips(image, rows: 0..<image.height) else { return nil }
+            self.init(width: image.width, height: image.height, strips: strips,
+                      colorSpace: image.colorSpace ?? CGColorSpaceCreateDeviceRGB())
+        }
+
+        nonisolated private init(width: Int, height: Int, strips: [CGImage], colorSpace: CGColorSpace) {
+            self.width = width
+            self.height = height
+            self.strips = strips
+            self.colorSpace = colorSpace
+        }
+
+        nonisolated private static func copyStrips(
+            _ image: CGImage, rows: Range<Int>, alignToBottom: Bool = false
+        ) -> [CGImage]? {
+            guard rows.lowerBound >= 0, rows.upperBound <= image.height else { return nil }
+            var result: [CGImage] = []
+            var top = rows.lowerBound
+            while top < rows.upperBound {
+                let remainder = rows.count % 512
+                let height = alignToBottom && top == rows.lowerBound && remainder > 0
+                    ? remainder : min(512, rows.upperBound - top)
+                guard let crop = image.cropping(to: CGRect(x: 0, y: top, width: image.width, height: height)),
+                      let context = CGContext(data: nil, width: image.width, height: height,
+                        bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                        space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+                context.interpolationQuality = .none
+                context.setBlendMode(.copy)
+                context.draw(crop, in: CGRect(x: 0, y: 0, width: image.width, height: height))
+                guard let owned = context.makeImage() else { return nil }
+                result.append(owned)
+                top += height
+            }
+            return result
+        }
+
+        nonisolated private func retaining(rows: Range<Int>) -> [CGImage]? {
+            guard rows.lowerBound >= 0, rows.upperBound <= height else { return nil }
+            var result: [CGImage] = []
+            var top = 0
+            for strip in strips {
+                let bottom = top + strip.height
+                let start = max(top, rows.lowerBound)
+                let end = min(bottom, rows.upperBound)
+                if start < end {
+                    if start == top && end == bottom {
+                        result.append(strip)
+                    } else {
+                        guard let copied = Self.copyStrips(strip, rows: (start - top)..<(end - top)) else { return nil }
+                        result.append(contentsOf: copied)
+                    }
+                }
+                top = bottom
+                if top >= rows.upperBound { break }
+            }
+            return result
+        }
+
+        nonisolated private static func joining(_ top: CGImage, _ bottom: CGImage) -> CGImage? {
+            let height = top.height + bottom.height
+            guard height <= 512, top.width == bottom.width,
+                  let context = CGContext(data: nil, width: top.width, height: height,
+                    bitsPerComponent: 8, bytesPerRow: top.width * 4,
+                    space: top.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            context.interpolationQuality = .none
+            context.setBlendMode(.copy)
+            context.draw(bottom, in: CGRect(x: 0, y: 0, width: bottom.width, height: bottom.height))
+            context.draw(top, in: CGRect(x: 0, y: bottom.height, width: top.width, height: top.height))
+            return context.makeImage()
+        }
+
+        nonisolated func replacingBottom(from seam: Int, with image: CGImage, from imageSeam: Int) -> StripImage? {
+            let newHeight = seam + image.height - imageSeam
+            guard image.width == width, newHeight > height,
+                  seam >= 0, seam <= height, imageSeam >= 0, imageSeam <= image.height,
+                  ScrollingCaptureEngine.canAllocateStitchedBitmap(width: width, height: newHeight),
+                  var retained = retaining(rows: 0..<seam) else { return nil }
+            var incomingTop = imageSeam
+            if let boundary = retained.last, boundary.height < 512, incomingTop < image.height {
+                let take = min(512 - boundary.height, image.height - incomingTop)
+                guard let crop = image.cropping(to: CGRect(x: 0, y: incomingTop, width: width, height: take)),
+                      let joined = Self.joining(boundary, crop) else { return nil }
+                retained[retained.count - 1] = joined
+                incomingTop += take
+            }
+            guard let incoming = Self.copyStrips(image, rows: incomingTop..<image.height) else { return nil }
+            return StripImage(width: width, height: newHeight, strips: retained + incoming, colorSpace: colorSpace)
+        }
+
+        nonisolated func replacingTop(through seam: Int, with image: CGImage, through imageSeam: Int) -> StripImage? {
+            let newHeight = imageSeam + height - seam
+            guard image.width == width, newHeight > height,
+                  ScrollingCaptureEngine.canAllocateStitchedBitmap(width: width, height: newHeight),
+                  seam >= 0, seam <= height, imageSeam >= 0, imageSeam <= image.height,
+                  var retained = retaining(rows: seam..<height) else { return nil }
+            var incomingEnd = imageSeam
+            if let boundary = retained.first, boundary.height < 512, incomingEnd > 0 {
+                let take = min(512 - boundary.height, incomingEnd)
+                guard let crop = image.cropping(to: CGRect(x: 0, y: incomingEnd - take, width: width, height: take)),
+                      let joined = Self.joining(crop, boundary) else { return nil }
+                retained[0] = joined
+                incomingEnd -= take
+            }
+            guard let incoming = Self.copyStrips(image, rows: 0..<incomingEnd, alignToBottom: true) else { return nil }
+            return StripImage(width: width, height: newHeight, strips: incoming + retained, colorSpace: colorSpace)
+        }
+
+        nonisolated func flattened() -> CGImage? {
+            guard ScrollingCaptureEngine.canAllocateStitchedBitmap(width: width, height: height) else { return nil }
+            return rendered(width: width, height: height)
+        }
+
+        nonisolated func preview() -> CGImage? {
+            // At most 256 x 2048 pixels, independent of the full-resolution store.
+            let scale = min(1, min(256 / CGFloat(width), 2048 / CGFloat(height)))
+            return rendered(width: max(1, Int((CGFloat(width) * scale).rounded())),
+                            height: max(1, Int((CGFloat(height) * scale).rounded())))
+        }
+
+        nonisolated private func rendered(width outputWidth: Int, height outputHeight: Int) -> CGImage? {
+            guard let context = CGContext(data: nil, width: outputWidth, height: outputHeight,
+                bitsPerComponent: 8, bytesPerRow: outputWidth * 4, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            context.interpolationQuality = outputWidth == width ? .none : .medium
+            context.setBlendMode(.copy)
+            // Draw at original integer row boundaries under one transform to
+            // avoid independently rounded strip heights creating preview gaps.
+            context.scaleBy(x: CGFloat(outputWidth) / CGFloat(width), y: CGFloat(outputHeight) / CGFloat(height))
+            var top = 0
+            for strip in strips {
+                top += strip.height
+                context.draw(strip, in: CGRect(x: 0, y: height - top, width: width, height: strip.height))
+            }
+            return context.makeImage()
+        }
     }
 
     private struct VerifiedBidirectionalMatch {
@@ -662,93 +858,6 @@ public final class ScrollingCaptureEngine: ObservableObject {
             edgeMAD: edgeMAD,
             cleanestSeamRowInPrev: clampedSeamInPrev
         )
-    }
-
-    /// Appends the bottom portion of `newSlice` (`seamRowInNew ..< sliceH`) onto the bottom of `master[0 ..< seamRowInMaster]`
-    private nonisolated static func stitchBottomExtension(
-        master: CGImage,
-        newSlice: CGImage,
-        seamRowInMaster: Int,
-        seamRowInNew: Int
-    ) -> CGImage? {
-        let w = master.width
-        let sliceH = newSlice.height
-        let masterKeepH = seamRowInMaster
-        let newSliceTakeH = sliceH - seamRowInNew
-        let totalHeight = masterKeepH + newSliceTakeH
-
-        guard masterKeepH >= 16,
-              seamRowInNew >= 0,
-              newSliceTakeH >= 16,
-              totalHeight > master.height,
-              canAllocateStitchedBitmap(width: w, height: totalHeight) else {
-            return nil
-        }
-
-        guard let topMasterPart = master.cropping(to: CGRect(x: 0, y: 0, width: w, height: masterKeepH)),
-              let bottomNewPart = newSlice.cropping(to: CGRect(x: 0, y: seamRowInNew, width: w, height: newSliceTakeH)) else {
-            return nil
-        }
-
-        let colorSpace = master.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: nil,
-            width: w,
-            height: totalHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: w * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return nil
-        }
-
-        ctx.draw(bottomNewPart, in: CGRect(x: 0, y: 0, width: w, height: newSliceTakeH))
-        ctx.draw(topMasterPart, in: CGRect(x: 0, y: newSliceTakeH, width: w, height: masterKeepH))
-        return ctx.makeImage()
-    }
-
-    /// Prepends the top portion of `newSlice` (`0 ..< seamRowInNew`) onto the top of `master[seamRowInMaster ..< master.height]`
-    private nonisolated static func stitchTopExtension(
-        master: CGImage,
-        newSlice: CGImage,
-        seamRowInMaster: Int,
-        seamRowInNew: Int
-    ) -> CGImage? {
-        let w = master.width
-        let newSliceTakeH = seamRowInNew
-        let masterKeepH = master.height - seamRowInMaster
-        let totalHeight = newSliceTakeH + masterKeepH
-
-        guard newSliceTakeH >= 16,
-              seamRowInMaster >= 0,
-              masterKeepH >= 16,
-              totalHeight > master.height,
-              canAllocateStitchedBitmap(width: w, height: totalHeight) else {
-            return nil
-        }
-
-        guard let topNewPart = newSlice.cropping(to: CGRect(x: 0, y: 0, width: w, height: newSliceTakeH)),
-              let bottomMasterPart = master.cropping(to: CGRect(x: 0, y: seamRowInMaster, width: w, height: masterKeepH)) else {
-            return nil
-        }
-
-        let colorSpace = master.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: nil,
-            width: w,
-            height: totalHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: w * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return nil
-        }
-
-        ctx.draw(bottomMasterPart, in: CGRect(x: 0, y: 0, width: w, height: masterKeepH))
-        ctx.draw(topNewPart, in: CGRect(x: 0, y: masterKeepH, width: w, height: newSliceTakeH))
-        return ctx.makeImage()
     }
 
     // MARK: - Minimalist Clean Guide Border (`滚动截屏边框太浮夸了，需要简单一点`)

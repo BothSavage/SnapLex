@@ -51,7 +51,8 @@ public final class VisionOCRService {
     /// Runs Apple Silicon hardware-accelerated Vision OCR (`VNRecognizeTextRequest`)
     @MainActor
     public func recognizeText(in image: NSImage) async -> String {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return "" }
+        guard !Task.isCancelled,
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return "" }
         let observations = await VisionTextRecognition.recognize(
             cgImage, languages: ["en-US", "zh-Hans", "zh-Hant", "ja-JP"]
         )

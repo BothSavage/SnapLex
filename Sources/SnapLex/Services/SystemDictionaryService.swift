@@ -2,20 +2,77 @@ import Foundation
 import CoreServices
 import AVFoundation
 
-public struct SystemDictResult {
+public struct SystemDictResult: Sendable {
     public let term: String
     public let phonetic: String
     public let formattedDefinition: String
 }
 
-public final class SystemDictionaryService {
+public final class SystemDictionaryService: @unchecked Sendable {
     public static let shared = SystemDictionaryService()
-    private let synthesizer = AVSpeechSynthesizer()
+    @MainActor private lazy var synthesizer = AVSpeechSynthesizer()
+    private let lookupQueue = DispatchQueue(label: "io.github.snaplex.dictionary", qos: .userInitiated)
+    private struct CacheEntry {
+        let result: SystemDictResult?
+        let cost: Int
+    }
+    // Positive and negative results share strict count/byte bounds. Access is
+    // confined to lookupQueue; dictionary IPC and formatting never run on main.
+    private var cache: [String: CacheEntry] = [:]
+    private var recency: [String] = []
+    private var cacheBytes = 0
 
     private init() {}
 
-    /// Instant (<2ms) offline lookup using macOS CoreServices DictionaryServices
+    /// Compatibility API for synchronous callers. Interactive translation uses
+    /// lookupAsync so cold DictionaryServices startup cannot delay the card.
     public func lookup(_ rawText: String) -> SystemDictResult? {
+        lookupQueue.sync { cachedLookup(rawText) }
+    }
+
+    public func lookupAsync(_ rawText: String) async -> SystemDictResult? {
+        let gate = SelectionMouseGestureGenerationGate()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lookupQueue.async {
+                    guard gate.isCurrent(0) else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    continuation.resume(returning: self.cachedLookup(rawText))
+                }
+            }
+        } onCancel: {
+            gate.update(to: 1)
+        }
+    }
+
+    private func cachedLookup(_ rawText: String) -> SystemDictResult? {
+        let term = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty, term.count <= 80 else { return nil }
+        let key = L10n.language + "\0" + term
+        if let entry = cache[key] {
+            recency.removeAll { $0 == key }
+            recency.append(key)
+            return entry.result
+        }
+        let result = uncachedLookup(term)
+        let cost = key.utf8.count + (result?.formattedDefinition.utf8.count ?? 0)
+            + (result?.phonetic.utf8.count ?? 0)
+        let maximumBytes = 512 * 1024
+        if cost <= maximumBytes {
+            while recency.count >= 128 || cacheBytes + cost > maximumBytes {
+                let oldest = recency.removeFirst()
+                cacheBytes -= cache.removeValue(forKey: oldest)?.cost ?? 0
+            }
+            cache[key] = CacheEntry(result: result, cost: cost)
+            recency.append(key)
+            cacheBytes += cost
+        }
+        return result
+    }
+
+    private func uncachedLookup(_ rawText: String) -> SystemDictResult? {
         let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= 80 else { return nil }
 
@@ -31,7 +88,7 @@ public final class SystemDictionaryService {
     }
 
     /// Speak text using macOS native AVSpeechSynthesizer
-    public func speak(_ text: String) {
+    @MainActor public func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let englishVoice = AVSpeechSynthesisVoice(language: "en-US") else { return }
         if synthesizer.isSpeaking {

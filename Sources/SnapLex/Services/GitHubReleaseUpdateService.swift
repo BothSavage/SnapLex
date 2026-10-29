@@ -161,6 +161,7 @@ public final class GitHubReleaseUpdateService: ObservableObject {
     private let repository = "SnapLex"
     private let session: URLSession
     private let currentVersionOverride: String?
+    private var lastSuccessfulCheck: Date?
 
     private var architecture: String {
         #if arch(arm64)
@@ -208,6 +209,11 @@ public final class GitHubReleaseUpdateService: ObservableObject {
             ?? "1.0.11"
     }
 
+    public func checkForUpdatesIfNeeded() async {
+        if let lastSuccessfulCheck, Date().timeIntervalSince(lastSuccessfulCheck) < 60 { return }
+        await checkForUpdates()
+    }
+
     public func checkForUpdates() async {
         guard state != .checking else { return }
         guard let url = URL(string: "https://api.github.com/repos/\(owner)/\(repository)/releases/latest") else {
@@ -229,6 +235,7 @@ public final class GitHubReleaseUpdateService: ObservableObject {
             }
             if http.statusCode == 404 {
                 state = .noRelease
+                lastSuccessfulCheck = Date()
                 return
             }
             guard (200..<300).contains(http.statusCode) else {
@@ -254,6 +261,7 @@ public final class GitHubReleaseUpdateService: ObservableObject {
             } else {
                 state = .upToDate
             }
+            lastSuccessfulCheck = Date()
         } catch {
             state = .failed(L10n.format("检查更新失败：%@", error.localizedDescription))
         }

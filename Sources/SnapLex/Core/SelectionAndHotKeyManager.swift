@@ -65,6 +65,8 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     private var hasStarted = false
     private var globalMouseMonitorRegistration = GlobalMouseMonitorRegistrationCoordinator()
     private let mouseGestureGenerationGate = SelectionMouseGestureGenerationGate()
+    private let applicationGenerationGate = SelectionMouseGestureGenerationGate()
+    private var applicationGeneration: UInt64 = 0
 
     // Mouse drag selection state
     private var globalMouseDownMonitor: Any?
@@ -75,6 +77,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     private var lastAutoPopupProcessIdentifier: pid_t?
 
     private var permissionTimer: Timer?
+    private var activationObserver: NSObjectProtocol?
 
     private init() {}
 
@@ -84,6 +87,16 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             isAXTrusted = isAccessibilityTrusted(prompt: false)
             registerCarbonHotKeys()
             startPermissionMonitor()
+            activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.applicationGeneration &+= 1
+                    self.applicationGenerationGate.update(to: self.applicationGeneration)
+                    self.directTranslationTask?.cancel()
+                }
+            }
         }
         ensureGlobalMouseMonitors(force: globalMouseMonitorRegistration.lastAttempt == nil)
     }
@@ -273,30 +286,20 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         if selectionEventTraceEnabled {
             NSLog("SnapLex selection trace: flow started request=%@ sourcePID=%d", requestID, Int32(sourceApplication.processIdentifier))
         }
+        let applicationGeneration = self.applicationGeneration
         let outcome = await SelectionMouseSelectionFlow.resolve(
             gesture: gesture,
             ownProcessIdentifier: NSRunningApplication.current.processIdentifier,
             isEnabled: { AppSettings.shared.enableMouseHoverBar },
-            isCurrentGesture: { self.mouseEventAdapter.isCurrent(gesture) },
-            foregroundProcessIdentifier: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
-            waitForSelectionToSettle: {
-                let startedAt = DispatchTime.now().uptimeNanoseconds
-                try? await Task.sleep(nanoseconds: 75_000_000)
-                let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000)
-                self.selectionLogger.debug("mouse selection settle wait completed request=\(requestID, privacy: .public) milliseconds=\(elapsedMilliseconds, privacy: .public)")
+            isCurrentGesture: {
+                self.mouseEventAdapter.isCurrent(gesture)
+                    && self.applicationGenerationGate.isCurrent(applicationGeneration)
             },
+            foregroundProcessIdentifier: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            waitForSelectionToSettle: { await Task.yield() },
             readAccessibility: { gesture in
-                let zeroScreenMaxY = Double(NSScreen.screens.first?.frame.maxY ?? 0)
-                return await self.accessibilityReader.inspectSelection(
-                    processIdentifier: sourceApplication.processIdentifier,
-                    downX: gesture.down.x,
-                    downY: gesture.down.y,
-                    upX: gesture.up.x,
-                    upY: gesture.up.y,
-                    zeroScreenMaxY: zeroScreenMaxY,
-                    shouldProceed: { [mouseGestureGenerationGate] in
-                        mouseGestureGenerationGate.isCurrent(gesture.generation)
-                    }
+                await self.readReadyMouseSelection(
+                    gesture, sourceApplication: sourceApplication, applicationGeneration: applicationGeneration
                 )
             },
             isDuplicate: { text, timestamp in
@@ -319,6 +322,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                     from: .general,
                     canContinue: {
                         self.mouseEventAdapter.isCurrent(gesture)
+                            && self.applicationGenerationGate.isCurrent(applicationGeneration)
                             && AppSettings.shared.enableMouseHoverBar
                             && NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier
                     },
@@ -400,25 +404,61 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         }
     }
 
-    /// Copies only after Accessibility confirmed both selection endpoints are
-    /// outside editable controls.
-    private func syntheticCopySelection(previousChangeCount: Int) async -> String? {
-        let pb = NSPasteboard.general
-        simulateCmdC()
-        try? await Task.sleep(nanoseconds: 85_000_000) // 85ms wait for pasteboard update
-        let currentChangeCount = pb.changeCount
-        if currentChangeCount != previousChangeCount,
-           let copied = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !copied.isEmpty {
-            return copied
+    /// Observe immediately, then confirm selection readiness on another frame.
+    /// Web providers commit through another process, so allow three display
+    /// frames rather than two before publishing an unchanged selection.
+    private func readReadyMouseSelection(
+        _ gesture: SelectionMouseGestureSnapshot,
+        sourceApplication: NSRunningApplication,
+        applicationGeneration: UInt64
+    ) async -> SelectionAXSnapshot {
+        let bundle = sourceApplication.bundleIdentifier ?? ""
+        let isWebProvider = bundle.contains("Safari") || bundle.contains("Chrome")
+            || bundle.contains("firefox") || bundle.contains("Edge")
+        let minimumAge: TimeInterval = isWebProvider ? 0.050 : 0.032
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.200
+        var previous: SelectionAXSnapshot?
+        while true {
+            let snapshot = await accessibilityReader.inspectSelection(
+                processIdentifier: sourceApplication.processIdentifier,
+                downX: gesture.down.x, downY: gesture.down.y,
+                upX: gesture.up.x, upY: gesture.up.y,
+                zeroScreenMaxY: Double(NSScreen.screens.first?.frame.maxY ?? 0),
+                shouldProceed: { [mouseGestureGenerationGate, applicationGenerationGate] in
+                    mouseGestureGenerationGate.isCurrent(gesture.generation)
+                        && applicationGenerationGate.isCurrent(applicationGeneration)
+                }
+            )
+            guard !Task.isCancelled, mouseEventAdapter.isCurrent(gesture),
+                  applicationGenerationGate.isCurrent(applicationGeneration),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == sourceApplication.processIdentifier,
+                  !snapshot.timedOut, snapshot.downTarget != .secure, snapshot.upTarget != .secure else {
+                return snapshot
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            if let previous, now - gesture.up.timestamp >= minimumAge,
+               previous.selectedText == snapshot.selectedText,
+               previous.downTarget == snapshot.downTarget, previous.upTarget == snapshot.upTarget,
+               previous.focusedTarget == snapshot.focusedTarget,
+               snapshot.selectedText != nil {
+                return snapshot
+            }
+            // An IPC already consumed the readiness window, or a provider has
+            // no AX text (e.g. WeChat): retain the established fallback policy.
+            if now >= deadline || (snapshot.selectedText == nil && now - gesture.up.timestamp >= minimumAge) {
+                return snapshot
+            }
+            previous = snapshot
+            do { try await Task.sleep(nanoseconds: 16_000_000) } catch { return snapshot }
         }
-        return nil
     }
 
     // MARK: - Grab Selected Text for the explicit translate shortcut
 
     public func grabCurrentSelection() async -> SelectedTextPayload? {
         let requestID = UUID().uuidString
+        let generation = mouseEventAdapter.currentGeneration
+        let applicationGeneration = self.applicationGeneration
         guard let frontApp = NSWorkspace.shared.frontmostApplication,
               frontApp.processIdentifier != NSRunningApplication.current.processIdentifier else {
             selectionLogger.debug("direct selection suppressed request=\(requestID, privacy: .public) reason=no-external-frontmost-app")
@@ -439,12 +479,28 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                     downY: point.y,
                     upX: point.x,
                     upY: point.y,
-                    zeroScreenMaxY: zeroScreenMaxY
+                    zeroScreenMaxY: zeroScreenMaxY,
+                    shouldProceed: { [mouseGestureGenerationGate, applicationGenerationGate] in
+                        mouseGestureGenerationGate.isCurrent(generation)
+                            && applicationGenerationGate.isCurrent(applicationGeneration)
+                    }
                 )
             },
             synthesizeCopy: {
-                let previousChangeCount = NSPasteboard.general.changeCount
-                return await self.syntheticCopySelection(previousChangeCount: previousChangeCount)
+                await SelectionClipboardCapture.readSelection(
+                    from: .general,
+                    canContinue: {
+                        self.mouseGestureGenerationGate.isCurrent(generation)
+                            && self.applicationGenerationGate.isCurrent(applicationGeneration)
+                            && self.isAccessibilityTrusted(prompt: false)
+                            && NSWorkspace.shared.frontmostApplication?.processIdentifier == frontApp.processIdentifier
+                    },
+                    sendCopy: { self.simulateCmdC() }
+                )
+            },
+            isCurrentRequest: {
+                self.mouseGestureGenerationGate.isCurrent(generation)
+                    && self.applicationGenerationGate.isCurrent(applicationGeneration)
             }
         )
 
@@ -654,7 +710,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                     self.selectionLogger.debug("direct selection action cancelled reason=task-or-foreground-changed")
                     return
                 }
-                self.selectionLogger.info("direct selection action presented characters=\(payload.text.count, privacy: .public) sourceApp=\(payload.sourceApp, privacy: .private)")
+                self.selectionLogger.info("direct selection action presented request=\(payload.diagnosticID, privacy: .public) characters=\(payload.text.count, privacy: .public) sourceApp=\(payload.sourceApp, privacy: .private)")
                 self.onTriggerDirectTranslateCard?(payload)
             }
         case 2, 4:

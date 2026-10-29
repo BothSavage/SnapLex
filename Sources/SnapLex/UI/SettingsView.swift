@@ -341,7 +341,7 @@ public struct SettingsView: View {
             PermissionCoordinator.shared.refresh()
             launchAtLogin.refreshStatus()
             if (section == .all || section == .preferences) && !updateInstaller.isBusy {
-                Task { await releaseUpdateChecker.checkForUpdates() }
+                Task { await releaseUpdateChecker.checkForUpdatesIfNeeded() }
             }
         }
     }

@@ -36,6 +36,16 @@ final class ScreenCaptureRecordingPipeline: NSObject, SCStreamOutput, SCStreamDe
     private var accumulatedPausedTime: TimeInterval = 0
     private var lastKeyLabel: String?
     private var lastKeyUptime: TimeInterval = 0
+    private var cachedKeyOverlay: KeyOverlayLayout?
+
+    private struct KeyOverlayLayout {
+        let label: String
+        let width: Int
+        let height: Int
+        let line: CTLine
+        let pill: CGPath
+        let textPosition: CGPoint
+    }
 
     init(
         screenRect: CGRect,
@@ -282,13 +292,15 @@ final class ScreenCaptureRecordingPipeline: NSObject, SCStreamOutput, SCStreamDe
         guard input.isReadyForMoreMediaData else { return }
 
         var pixelBuffer = sourceBuffer
-        if recordKeystrokes, let pool = adaptor.pixelBufferPool {
+        // Keep the ScreenCaptureKit buffer on the direct writer path unless a
+        // visible overlay actually needs compositing. Expiry is decided once per frame.
+        if let overlay = activeKeyOverlay(for: sourceBuffer), let pool = adaptor.pixelBufferPool {
             var renderedBuffer: CVPixelBuffer?
             guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &renderedBuffer) == kCVReturnSuccess,
                   let renderedBuffer else { return }
             let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(sourceBuffer), height: CVPixelBufferGetHeight(sourceBuffer))
             imageContext.render(CIImage(cvPixelBuffer: sourceBuffer), to: renderedBuffer, bounds: bounds, colorSpace: CGColorSpaceCreateDeviceRGB())
-            drawKeyOverlay(on: renderedBuffer)
+            drawKeyOverlay(overlay, on: renderedBuffer)
             pixelBuffer = renderedBuffer
         }
 
@@ -352,32 +364,26 @@ final class ScreenCaptureRecordingPipeline: NSObject, SCStreamOutput, SCStreamDe
         return copyStatus == noErr ? copy : nil
     }
 
-    private func drawKeyOverlay(on pixelBuffer: CVPixelBuffer) {
-        guard let label = lastKeyLabel,
-              ProcessInfo.processInfo.systemUptime - lastKeyUptime < 1.1,
-              let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
-
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+    private func activeKeyOverlay(for pixelBuffer: CVPixelBuffer) -> KeyOverlayLayout? {
+        guard recordKeystrokes, let label = lastKeyLabel, !label.isEmpty,
+              ProcessInfo.processInfo.systemUptime - lastKeyUptime < 1.1 else {
+            lastKeyLabel = nil
+            cachedKeyOverlay = nil
+            return nil
+        }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
+        if let cachedKeyOverlay, cachedKeyOverlay.label == label,
+           cachedKeyOverlay.width == width, cachedKeyOverlay.height == height {
+            return cachedKeyOverlay
+        }
         let scale = CGFloat(width) / max(1, screenRect.width)
-        guard let context = CGContext(
-            data: baseAddress,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-        ) else { return }
-
         let font = CTFontCreateWithName("Menlo-Bold" as CFString, 15 * scale, nil)
         let attributes: [CFString: Any] = [
             kCTFontAttributeName: font,
             kCTForegroundColorAttributeName: CGColor(gray: 1, alpha: 1)
         ]
-        guard let attributed = CFAttributedStringCreate(nil, label as CFString, attributes as CFDictionary) else { return }
+        guard let attributed = CFAttributedStringCreate(nil, label as CFString, attributes as CFDictionary) else { return nil }
         let line = CTLineCreateWithAttributedString(attributed)
         var ascent: CGFloat = 0
         var descent: CGFloat = 0
@@ -390,12 +396,30 @@ final class ScreenCaptureRecordingPipeline: NSObject, SCStreamOutput, SCStreamDe
             width: textWidth + 28 * scale,
             height: textHeight + 14 * scale
         )
-        let pill = CGPath(roundedRect: rect, cornerWidth: 8 * scale, cornerHeight: 8 * scale, transform: nil)
+        let layout = KeyOverlayLayout(
+            label: label, width: width, height: height, line: line,
+            pill: CGPath(roundedRect: rect, cornerWidth: 8 * scale, cornerHeight: 8 * scale, transform: nil),
+            textPosition: CGPoint(x: rect.minX + 14 * scale, y: rect.minY + 7 * scale + descent)
+        )
+        cachedKeyOverlay = layout
+        return layout
+    }
+
+    private func drawKeyOverlay(_ layout: KeyOverlayLayout, on pixelBuffer: CVPixelBuffer) {
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else { return }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer),
+              let context = CGContext(
+                data: baseAddress, width: layout.width, height: layout.height,
+                bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+              ) else { return }
         context.setFillColor(CGColor(gray: 0.06, alpha: 0.78))
-        context.addPath(pill)
+        context.addPath(layout.pill)
         context.fillPath()
-        context.textPosition = CGPoint(x: rect.minX + 14 * scale, y: rect.minY + 7 * scale + descent)
-        CTLineDraw(line, context)
+        context.textPosition = layout.textPosition
+        CTLineDraw(layout.line, context)
     }
 
     private func fail(_ error: Error) {

@@ -170,6 +170,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         focusInput: Bool = false,
         diagnosticID: String? = nil
     ) {
+        let diagnosticID = diagnosticID ?? TranslatorViewModel.shared.activeSelectionDiagnosticID
         selectionLogger.info("translation card presentation started selectionRequest=\(diagnosticID ?? "-", privacy: .public) nearMouse=\(nearMouse, privacy: .public) focusInput=\(focusInput, privacy: .public) existingVisible=\(self.cardPanel?.isVisible == true, privacy: .public)")
         hidePillBar()
         if cardPanel == nil {

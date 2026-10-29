@@ -43,6 +43,10 @@ public final class TranslatorViewModel: ObservableObject {
     private var translationRequestID = UUID()
     private var preparedSelectionDiagnosticID: String?
     private(set) var activeSelectionDiagnosticID: String?
+    private var dictionaryTask: Task<Void, Never>?
+    private var dictionaryRequestID = UUID()
+    private var recognizedInput: String?
+    private var recognizedSourceCode = "en"
     private var googleTranslationTask: Task<Void, Never>?
     private var nativeTranslationWatchdog: Task<Void, Never>?
     private var usingAppleFallback = false
@@ -75,7 +79,10 @@ public final class TranslatorViewModel: ObservableObject {
         }
         self.englishSpeaker = englishSpeaker ?? { SystemDictionaryService.shared.speak($0) }
         self.showSpeechTranslationCard = showSpeechTranslationCard ?? {
-            WindowManager.shared.showTranslationCard(atSavedAnchor: true, nearMouse: true)
+            WindowManager.shared.showTranslationCard(
+                atSavedAnchor: true, nearMouse: true,
+                diagnosticID: TranslatorViewModel.shared.activeSelectionDiagnosticID
+            )
         }
     }
 
@@ -91,6 +98,9 @@ public final class TranslatorViewModel: ObservableObject {
         cancelPendingTranslation()
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         self.inputText = cleaned
+        self.phonetic = ""
+        self.systemDefinition = ""
+        self.showSystemDictDetail = false
         self.sourceApp = sourceApp
         self.triggerSource = trigger
         self.capturedImage = nil
@@ -125,13 +135,17 @@ public final class TranslatorViewModel: ObservableObject {
         if let sourceApp = sourceApp { self.sourceApp = sourceApp }
         if let trigger = trigger { self.triggerSource = trigger }
         if let image = image { self.capturedImage = image }
-        activeSelectionDiagnosticID = selectionDiagnosticID
+        let diagnosticID = selectionDiagnosticID ?? UUID().uuidString
+        activeSelectionDiagnosticID = diagnosticID
 
         self.taskMode = mode
         googleTranslationTask?.cancel()
         googleTranslationTask = nil
         nativeTranslationWatchdog?.cancel()
         nativeTranslationWatchdog = nil
+        dictionaryTask?.cancel()
+        dictionaryTask = nil
+        dictionaryRequestID = UUID()
         translationRequestID = UUID()
         self.errorMessage = nil
         self.translatedOutput = ""
@@ -146,28 +160,22 @@ public final class TranslatorViewModel: ObservableObject {
         }
 
         // Auto language direction (Chinese -> English, English/Other -> 简体中文)
+        let sourceCode = sourceLanguageCode(for: cleaned)
         self.sourceLangLabel = NativeTranslationSupport.detectSourceLangLabel(cleaned)
         if let overrideTargetLang = overrideTargetLang {
             self.targetLangLabel = overrideTargetLang
         } else {
-            self.targetLangLabel = NativeTranslationSupport.defaultTargetLanguage(for: cleaned)
+            self.targetLangLabel = NativeTranslationSupport.defaultTargetLanguage(sourceCode: sourceCode)
         }
 
-        // Instant offline macOS system dictionary lookup (<2ms)
-        if let sysResult = SystemDictionaryService.shared.lookup(cleaned) {
-            self.phonetic = sysResult.phonetic
-            self.systemDefinition = sysResult.formattedDefinition
-            self.showSystemDictDetail = cleaned.count <= 42 && !cleaned.contains("\n")
-        } else {
-            self.phonetic = ""
-            self.systemDefinition = ""
-            self.showSystemDictDetail = false
-        }
+        self.phonetic = ""
+        self.systemDefinition = ""
+        self.showSystemDictDetail = false
 
         runTranslation(
             for: cleaned,
             targetLang: self.targetLangLabel,
-            selectionDiagnosticID: selectionDiagnosticID
+            selectionDiagnosticID: diagnosticID
         )
     }
 
@@ -183,6 +191,9 @@ public final class TranslatorViewModel: ObservableObject {
 
     public func cancelPendingTranslation() {
         pendingEnglishSpeechRequestID = nil
+        dictionaryTask?.cancel()
+        dictionaryTask = nil
+        dictionaryRequestID = UUID()
         translationRequestID = UUID()
         googleTranslationTask?.cancel()
         googleTranslationTask = nil
@@ -194,7 +205,36 @@ public final class TranslatorViewModel: ObservableObject {
         isTranslating = false
     }
 
+    private func sourceLanguageCode(for text: String) -> String {
+        if recognizedInput != text {
+            recognizedInput = text
+            recognizedSourceCode = NativeTranslationSupport.sourceLanguageCode(for: text)
+        }
+        return recognizedSourceCode
+    }
+
+    private func startDictionaryLookup(for text: String, selectionDiagnosticID: String?) {
+        dictionaryTask?.cancel()
+        dictionaryRequestID = UUID()
+        let requestID = dictionaryRequestID
+        let translationID = translationRequestID
+        dictionaryTask = Task { [weak self] in
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            let result = await SystemDictionaryService.shared.lookupAsync(text)
+            guard !Task.isCancelled, let self, self.dictionaryRequestID == requestID,
+                  self.inputText == text else { return }
+            self.phonetic = result?.phonetic ?? ""
+            self.systemDefinition = result?.formattedDefinition ?? ""
+            self.showSystemDictDetail = result != nil && text.count <= 42 && !text.contains("\n")
+            let milliseconds = Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
+            self.translationLogger.info("dictionary published translationRequest=\(translationID.uuidString, privacy: .public) request=\(requestID.uuidString, privacy: .public) selectionRequest=\(selectionDiagnosticID ?? "-", privacy: .public) milliseconds=\(milliseconds, privacy: .public) found=\(result != nil, privacy: .public)")
+        }
+    }
+
     private func runTranslation(for text: String, targetLang: String, selectionDiagnosticID: String? = nil) {
+        dictionaryTask?.cancel()
+        dictionaryTask = nil
+        dictionaryRequestID = UUID()
         pendingEnglishSpeechRequestID = nil
         lastCompletedTranslationInput = nil
         googleTranslationTask?.cancel()
@@ -217,7 +257,8 @@ public final class TranslatorViewModel: ObservableObject {
             return
         }
 
-        let source = NativeTranslationSupport.sourceLanguageCode(for: cleanedText)
+        startDictionaryLookup(for: cleanedText, selectionDiagnosticID: selectionDiagnosticID)
+        let source = sourceLanguageCode(for: cleanedText)
         let target = NativeTranslationSupport.languageCode(for: targetLang)
         guard source != target else {
             translationConfiguration = nil
@@ -264,10 +305,10 @@ public final class TranslatorViewModel: ObservableObject {
                         self.translationLogger.debug("translation failure discarded request=\(requestID, privacy: .public) reason=stale-google-error")
                         return
                     }
-                    // The public Google Translate endpoint is frequently rate-limited
-                    // (HTTP 429) or unreachable on some networks. Keep the selected
-                    // engine as the user's preference, but finish this request with
-                    // macOS Translation instead of leaving the selection untranslated.
+                    // Fail over only after Google fails. Preserve the native
+                    // view-backed session's existing user consent and language
+                    // preparation flow; never start a speculative download or
+                    // change the user's selected translation engine.
                     self.usingAppleFallback = true
                     self.translationLogger.error("translation fallback request=\(requestID, privacy: .public) selectionRequest=\(selectionDiagnosticID ?? "-", privacy: .public) from=google to=apple errorType=\(String(reflecting: type(of: error)), privacy: .public)")
                     self.translationConfiguration = NativeTranslationSupport.makeConfiguration(
@@ -314,7 +355,7 @@ public final class TranslatorViewModel: ObservableObject {
     public func speakEnglish(fromPill: Bool = false) {
         let source = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty else { return }
-        if NativeTranslationSupport.sourceLanguageCode(for: source) == "en" {
+        if sourceLanguageCode(for: source) == "en" {
             pendingEnglishSpeechRequestID = nil
             englishSpeaker(source)
             return

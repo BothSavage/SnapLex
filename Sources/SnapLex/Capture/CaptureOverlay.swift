@@ -1213,10 +1213,12 @@ public final class CaptureCanvasView: NSView {
         ctx.saveGState()
         defer { ctx.restoreGState() }
 
-        let center = item.transformCenter
-        ctx.translateBy(x: center.x, y: center.y)
-        ctx.rotate(by: item.rotationDegrees * .pi / 180)
-        ctx.translateBy(x: -center.x, y: -center.y)
+        if item.hasRotation {
+            let center = item.transformCenter
+            ctx.translateBy(x: center.x, y: center.y)
+            ctx.rotate(by: item.rotationDegrees * .pi / 180)
+            ctx.translateBy(x: -center.x, y: -center.y)
+        }
 
         let rect = item.boundingRect
         switch item.tool {
@@ -1260,10 +1262,7 @@ public final class CaptureCanvasView: NSView {
             ctx.setLineWidth(item.lineWidth)
             ctx.setLineCap(.round)
             ctx.setLineJoin(.round)
-            ctx.move(to: item.points[0])
-            for pt in item.points.dropFirst() {
-                ctx.addLine(to: pt)
-            }
+            ctx.addPath(item.freehandPath)
             ctx.strokePath()
 
         case .marker:
@@ -1272,10 +1271,7 @@ public final class CaptureCanvasView: NSView {
             ctx.setLineWidth(max(14, item.lineWidth * 3.5))
             ctx.setLineCap(.butt)
             ctx.setLineJoin(.round)
-            ctx.move(to: item.points[0])
-            for pt in item.points.dropFirst() {
-                ctx.addLine(to: pt)
-            }
+            ctx.addPath(item.freehandPath)
             ctx.strokePath()
 
         case .mosaic:
@@ -1642,16 +1638,18 @@ public final class CaptureCanvasView: NSView {
             selectionRect = resizedRect(from: initialRect, handle: handle, to: pt)
 
         case .drawingAnnotation:
-            guard var active = activeAnnotation else { break }
+            guard let tool = activeAnnotation?.tool else { break }
             let clampedPt = CGPoint(
                 x: max(selectionRect.minX, min(pt.x, selectionRect.maxX)),
                 y: max(selectionRect.minY, min(pt.y, selectionRect.maxY))
             )
-            active.endPoint = clampedPt
-            if active.tool == .pencil || active.tool == .marker {
-                active.points.append(clampedPt)
+            if tool == .pencil || tool == .marker {
+                // Mutate optional storage directly: a local value copy keeps the
+                // growing point array shared and forces a copy on every drag.
+                activeAnnotation?.appendFreehandPoint(clampedPt)
+            } else {
+                activeAnnotation?.endPoint = clampedPt
             }
-            activeAnnotation = active
             needsDisplay = true
 
         case .selectingAnnotation:

@@ -135,7 +135,10 @@ private struct ScreenshotHistoryTile: View {
                 .stroke(SnapLexTheme.toolbarBorder(for: colorScheme), lineWidth: 0.7)
         )
         .task(id: record.id) {
-            image = await ScreenshotThumbnailLoader.load(for: record.fileURL)
+            let thumbnail = await ScreenshotThumbnailLoader.load(for: record.fileURL)
+            guard !Task.isCancelled else { return }
+            image = thumbnail
         }
+        .onDisappear { image = nil }
     }
 }

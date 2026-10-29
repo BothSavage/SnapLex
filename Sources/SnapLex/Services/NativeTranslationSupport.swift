@@ -35,7 +35,11 @@ public enum NativeTranslationSupport {
 
     public static func defaultTargetLanguage(for text: String) -> String {
         let source = sourceLanguageCode(for: text)
-        return source == "zh" || source == "zh-TW" ? "English" : "简体中文"
+        return defaultTargetLanguage(sourceCode: source)
+    }
+
+    public static func defaultTargetLanguage(sourceCode: String) -> String {
+        sourceCode == "zh" || sourceCode == "zh-TW" ? "English" : "简体中文"
     }
 
     public static func languageCode(for label: String) -> String {

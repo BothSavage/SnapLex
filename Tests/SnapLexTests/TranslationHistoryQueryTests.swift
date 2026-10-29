@@ -6,10 +6,11 @@ import XCTest
 @MainActor
 final class TranslationHistoryQueryTests: XCTestCase {
     func testPagesAndStatisticsCoverEveryRecordWithIdenticalTimestamps() async throws {
-        let (directory, url, store) = try makeStore()
+        let (directory, url, store) = try await makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         try seed(url, count: 123)
         store.reload()
+        await store.waitForPendingWrites()
         XCTAssertEqual(store.entries.count, 50, "Startup should only retain the most recent records")
 
         let range = TranslationHistoryRange(start: Date(timeIntervalSince1970: 999), end: Date(timeIntervalSince1970: 1001), search: "")
@@ -37,10 +38,11 @@ final class TranslationHistoryQueryTests: XCTestCase {
     }
 
     func testSearchDateBoundsDeletionAndCacheInvalidation() async throws {
-        let (directory, url, store) = try makeStore()
+        let (directory, url, store) = try await makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         try seed(url, count: 75)
         store.reload()
+        await store.waitForPendingWrites()
         let range = TranslationHistoryRange(start: Date(timeIntervalSince1970: 1000), end: Date(timeIntervalSince1970: 1000), search: "HELLO")
         let searched = try await TranslationHistoryQuery.summary(databaseURL: url, range: range, ignoredWords: [], calendar: .current)
         XCTAssertEqual(searched.count, 75)
@@ -61,6 +63,7 @@ final class TranslationHistoryQueryTests: XCTestCase {
         XCTAssertFalse(model.hasMore)
         let revision = store.revision
         store.deleteEntry(id: model.entries[0].id)
+        await store.waitForPendingWrites()
         XCTAssertGreaterThan(store.revision, revision)
         await model.load(store: store, period: .today, search: "", now: now, calendar: calendar)
         XCTAssertEqual(model.summary.count, 74)
@@ -73,10 +76,11 @@ final class TranslationHistoryQueryTests: XCTestCase {
     }
 
     func testLargeHistoryOnlyLoadsFirstPageWhileCountingAllRecords() async throws {
-        let (directory, url, store) = try makeStore()
+        let (directory, url, store) = try await makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         try seed(url, count: 10_000)
         store.reload()
+        await store.waitForPendingWrites()
         let range = TranslationHistoryRange(start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 2000), search: "")
         let pageStart = Date()
         let page = try await TranslationHistoryQuery.page(databaseURL: url, range: range)
@@ -93,7 +97,7 @@ final class TranslationHistoryQueryTests: XCTestCase {
     }
 
     func testUnicodeSearchMatchesTextTranslationAndApplicationWithoutCaseSensitivity() async throws {
-        let (directory, url, store) = try makeStore()
+        let (directory, url, store) = try await makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         store.recordCompletedTranslation(inputText: "ÉCOLE", translatedText: "学校", sourceLanguage: "fr", targetLanguage: "zh", sourceApp: "Éditeur", trigger: .selection)
         let start = Date(timeIntervalSince1970: 0)
@@ -107,11 +111,12 @@ final class TranslationHistoryQueryTests: XCTestCase {
         }
     }
 
-    private func makeStore() throws -> (URL, URL, TranslationHistoryStore) {
+    private func makeStore() async throws -> (URL, URL, TranslationHistoryStore) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SnapLexHistoryQuery-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("history.sqlite3")
         let store = TranslationHistoryStore(databaseURL: url, shouldRecordSelection: { true }, shouldRecordScreenshot: { true })
+        await store.waitForPendingWrites()
         return (directory, url, store)
     }
 

@@ -12,6 +12,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var appearanceObserver: AnyCancellable?
     private var localShortcutMonitor: Any?
     private var explicitQuitRequested = false
+    private var isDrainingHistoryForTermination = false
     private var instanceLock: SingleInstanceLock?
     private var activationObserver: NSObjectProtocol?
     private var startupPermissionScanComplete = false
@@ -143,13 +144,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if PermissionGuideSession.shared.isPending {
+        let permissionPending = PermissionGuideSession.shared.isPending
+        if permissionPending {
             PermissionGuideWindow.shared.preserveSessionForTermination()
-            return .terminateNow
         }
-        guard !explicitQuitRequested else { return .terminateNow }
-        WindowManager.shared.hideDashboard()
-        return .terminateCancel
+        guard explicitQuitRequested || permissionPending else {
+            WindowManager.shared.hideDashboard()
+            return .terminateCancel
+        }
+        guard !isDrainingHistoryForTermination else { return .terminateLater }
+        isDrainingHistoryForTermination = true
+        TranslatorViewModel.shared.cancelPendingTranslation()
+        Task { @MainActor in
+            await TranslationHistoryStore.shared.finishPendingWritesForTermination()
+            await ScreenshotHistoryStore.shared.waitForPendingOperations()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func allowTerminationForUpdate() {
@@ -302,9 +313,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 text: payload.text,
                 mode: .translate,
                 sourceApp: payload.sourceApp,
-                trigger: payload.trigger
+                trigger: payload.trigger,
+                selectionDiagnosticID: payload.diagnosticID
             )
-            WindowManager.shared.showTranslationCard(nearMouse: true)
+            WindowManager.shared.showTranslationCard(nearMouse: true, diagnosticID: payload.diagnosticID)
         }
 
         mgr.onTriggerScreenshot = {
@@ -359,9 +371,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 text: payload.text,
                 mode: .translate,
                 sourceApp: payload.sourceApp,
-                trigger: payload.trigger
+                trigger: payload.trigger,
+                selectionDiagnosticID: payload.diagnosticID
             )
-            WindowManager.shared.showTranslationCard(nearMouse: true)
+            WindowManager.shared.showTranslationCard(nearMouse: true, diagnosticID: payload.diagnosticID)
         }
     }
 

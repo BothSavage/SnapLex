@@ -240,7 +240,7 @@ public struct ControlPanelPopoverView: View {
         .frame(width: 360, height: 600)
         .background(SnapLexTheme.toolbarBackground(for: colorScheme))
         .snapLexAppearance()
-        .task(id: translations.revision) { await historyOverview.load(store: translations) }
+        .task(id: translations.revision) { await historyOverview.load(store: translations, scope: .popover) }
         .onAppear { screenshots.reload() }
     }
 

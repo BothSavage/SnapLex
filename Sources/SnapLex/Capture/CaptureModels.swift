@@ -110,7 +110,68 @@ public struct SnipAnnotationItem: Identifiable {
     public var tool: SnipAnnotationTool
     public var startPoint: CGPoint
     public var endPoint: CGPoint
-    public var points: [CGPoint]
+    private var freehandGeometry: FreehandGeometry
+
+    /// Keep the public point-array interface for transforms and external editors.
+    /// Interactive drawing should use `appendFreehandPoint` to append in place.
+    public var points: [CGPoint] {
+        get { freehandGeometry.points }
+        set { freehandGeometry = FreehandGeometry(points: newValue) }
+    }
+
+    /// Borrowed for drawing; callers must not mutate the returned path.
+    public var freehandPath: CGPath { freehandGeometry.path }
+
+    public mutating func appendFreehandPoint(_ point: CGPoint) {
+        if !isKnownUniquelyReferenced(&freehandGeometry) {
+            freehandGeometry = FreehandGeometry(copying: freehandGeometry)
+        }
+        freehandGeometry.append(point)
+        endPoint = point
+    }
+
+    /// Geometry is shared by value copies until points change. Keeping the
+    /// mutable path private avoids rebuilding committed strokes during redraw.
+    private final class FreehandGeometry {
+        var points: [CGPoint]
+        let path: CGMutablePath
+        var bounds: CGRect
+
+        init(points: [CGPoint]) {
+            self.points = points
+            self.path = CGMutablePath()
+            self.bounds = .null
+            for (index, point) in points.enumerated() {
+                if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+                include(point)
+            }
+        }
+
+        init(copying other: FreehandGeometry) {
+            points = other.points
+            path = CGMutablePath()
+            path.addPath(other.path)
+            bounds = other.bounds
+        }
+
+        func append(_ point: CGPoint) {
+            if points.isEmpty { path.move(to: point) } else { path.addLine(to: point) }
+            points.append(point)
+            include(point)
+        }
+
+        private func include(_ point: CGPoint) {
+            if bounds.isNull {
+                bounds = CGRect(origin: point, size: .zero)
+            } else {
+                let minX = min(bounds.minX, point.x)
+                let minY = min(bounds.minY, point.y)
+                bounds = CGRect(x: minX, y: minY,
+                                width: max(bounds.maxX, point.x) - minX,
+                                height: max(bounds.maxY, point.y) - minY)
+            }
+        }
+    }
     public var color: NSColor
     public var lineWidth: CGFloat
     public var isFilled: Bool
@@ -139,7 +200,7 @@ public struct SnipAnnotationItem: Identifiable {
         self.tool = tool
         self.startPoint = startPoint
         self.endPoint = endPoint
-        self.points = points
+        self.freehandGeometry = FreehandGeometry(points: points)
         self.color = color
         self.lineWidth = lineWidth
         self.isFilled = isFilled
@@ -164,25 +225,34 @@ public struct SnipAnnotationItem: Identifiable {
     }
 
     public var transformCenter: CGPoint {
-        CGPoint(x: unrotatedVisualBounds.midX, y: unrotatedVisualBounds.midY)
+        let bounds = unrotatedVisualBounds
+        return CGPoint(x: bounds.midX, y: bounds.midY)
+    }
+
+    public var hasRotation: Bool {
+        abs(rotationDegrees.truncatingRemainder(dividingBy: 360)) > 0.001
     }
 
     /// Bounds used for selection, hit testing, and transform handles.
     public var selectionBounds: CGRect {
-        let visual = unrotatedVisualBounds.insetBy(dx: -selectionPadding, dy: -selectionPadding)
-        guard abs(rotationDegrees.truncatingRemainder(dividingBy: 360)) > 0.001 else { return visual }
+        let bounds = unrotatedVisualBounds
+        let visual = bounds.insetBy(dx: -selectionPadding, dy: -selectionPadding)
+        guard hasRotation else { return visual }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
         let corners = [
             CGPoint(x: visual.minX, y: visual.minY),
             CGPoint(x: visual.maxX, y: visual.minY),
             CGPoint(x: visual.maxX, y: visual.maxY),
             CGPoint(x: visual.minX, y: visual.maxY)
-        ].map { Self.rotate($0, around: transformCenter, by: rotationDegrees) }
+        ].map { Self.rotate($0, around: center, by: rotationDegrees) }
         return Self.bounds(of: corners)
     }
 
     public func contains(_ point: CGPoint, tolerance: CGFloat = 8) -> Bool {
-        let localPoint = Self.rotate(point, around: transformCenter, by: -rotationDegrees)
         let bounds = unrotatedVisualBounds
+        let localPoint = hasRotation
+            ? Self.rotate(point, around: CGPoint(x: bounds.midX, y: bounds.midY), by: -rotationDegrees)
+            : point
         let slop = max(tolerance, lineWidth / 2 + 3)
 
         switch tool {
@@ -243,7 +313,7 @@ public struct SnipAnnotationItem: Identifiable {
     private var unrotatedVisualBounds: CGRect {
         switch tool {
         case .pencil, .marker:
-            return Self.bounds(of: points.count > 1 ? points : [startPoint, endPoint])
+            return freehandGeometry.points.count > 1 ? freehandGeometry.bounds : boundingRect
         case .counter:
             let radius = max(13, lineWidth * 3)
             return CGRect(x: startPoint.x - radius, y: startPoint.y - radius, width: radius * 2, height: radius * 2)
@@ -363,12 +433,13 @@ public enum AnnotationGeometry {
         yAxisDown: Bool,
         radius: CGFloat = 11
     ) -> AnnotationTransformHandle? {
-        let rotatePoint = rotateHandlePoint(for: item, yAxisDown: yAxisDown)
+        let bounds = item.selectionBounds
+        let rotatePoint = CGPoint(x: bounds.midX, y: yAxisDown ? bounds.minY - 24 : bounds.maxY + 24)
         if hypot(point.x - rotatePoint.x, point.y - rotatePoint.y) <= radius + 2 {
             return .rotate
         }
         for handle in ResizeHandlePosition.allCases {
-            let handlePoint = Self.point(for: handle, in: item.selectionBounds, yAxisDown: yAxisDown)
+            let handlePoint = Self.point(for: handle, in: bounds, yAxisDown: yAxisDown)
             if hypot(point.x - handlePoint.x, point.y - handlePoint.y) <= radius {
                 return .resize(handle)
             }
