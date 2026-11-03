@@ -1,9 +1,29 @@
 import AppKit
+import os
 
 /// Copies only in response to a verified selection gesture in a supported app.
 /// A private pasteboard can be injected for tests; production uses .general.
 @MainActor
 enum SelectionClipboardCapture {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "SnapLex", category: "SelectionClipboard")
+
+    // Browsers and text editors often attach source and rich-text metadata to
+    // otherwise ordinary copied text. Preserve these representations as well.
+    private static let supportedGeneralTypes: Set<NSPasteboard.PasteboardType> = [
+        .string, .rtf, .html, .tiff, .png,
+        NSPasteboard.PasteboardType("public.utf8-plain-text"),
+        NSPasteboard.PasteboardType("public.utf16-plain-text"),
+        NSPasteboard.PasteboardType("public.utf16-external-plain-text"),
+        NSPasteboard.PasteboardType("com.apple.webarchive"),
+        NSPasteboard.PasteboardType("com.apple.WebKit.custom-pasteboard-data"),
+        NSPasteboard.PasteboardType("org.chromium.source-url"),
+        NSPasteboard.PasteboardType("org.nspasteboard.source")
+    ]
+
+    static func supportsGeneralPasteboardTypes(_ types: [NSPasteboard.PasteboardType]) -> Bool {
+        types.allSatisfy(supportedGeneralTypes.contains)
+    }
+
     static func readSelection(
         from pasteboard: NSPasteboard,
         maximumSnapshotBytes: Int = 32 * 1024 * 1024,
@@ -19,7 +39,10 @@ enum SelectionClipboardCapture {
             !Task.isCancelled
                 && pasteboard.changeCount == initialChangeCount
                 && ProcessInfo.processInfo.systemUptime < snapshotDeadline
-        }), pasteboard.changeCount == initialChangeCount, canContinue(), !Task.isCancelled else { return nil }
+        }), pasteboard.changeCount == initialChangeCount, canContinue(), !Task.isCancelled else {
+            logger.info("Compatibility copy skipped: clipboard could not be preserved or the request changed")
+            return nil
+        }
 
         var observedCopyChangeCount: Int?
         defer {
@@ -65,17 +88,12 @@ enum SelectionClipboardCapture {
         // Avoid asking file/promise providers to render expensive data on
         // the main thread. Declining the copy preserves the entire clipboard;
         // never snapshot just a convenient subset of its representations.
-        let supportedTypes: Set<NSPasteboard.PasteboardType> = [
-            .string, .rtf, .html, .tiff, .png,
-            NSPasteboard.PasteboardType("public.utf8-plain-text"),
-            NSPasteboard.PasteboardType("public.utf16-external-plain-text")
-        ]
         guard sourceItems.count <= 16,
               sourceItems.allSatisfy({ item in
                   // Private pasteboards used by callers/tests are under their
                   // control and may contain small custom binary representations.
                   item.types.count <= 16 && (pasteboard.name != .general
-                      || item.types.allSatisfy(supportedTypes.contains))
+                      || supportsGeneralPasteboardTypes(item.types))
               }) else { return nil }
         var bytes = 0
         var items: [Item] = []

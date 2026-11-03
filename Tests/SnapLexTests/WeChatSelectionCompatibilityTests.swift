@@ -5,6 +5,20 @@ import XCTest
 
 @MainActor
 final class WeChatSelectionCompatibilityTests: XCTestCase {
+    func testCommonBrowserClipboardMetadataCanBePreservedButFilesAndProtectedItemsAreRejected() {
+        let type: (String) -> NSPasteboard.PasteboardType = { NSPasteboard.PasteboardType($0) }
+        XCTAssertTrue(SelectionClipboardCapture.supportsGeneralPasteboardTypes([
+            .string, .html, type("org.chromium.source-url"), type("com.apple.WebKit.custom-pasteboard-data")
+        ]))
+        XCTAssertFalse(SelectionClipboardCapture.supportsGeneralPasteboardTypes([.string, .fileURL]))
+        XCTAssertFalse(SelectionClipboardCapture.supportsGeneralPasteboardTypes([
+            .string, type("org.nspasteboard.ConcealedType")
+        ]))
+        XCTAssertFalse(SelectionClipboardCapture.supportsGeneralPasteboardTypes([
+            .string, type("org.nspasteboard.TransientType")
+        ]))
+    }
+
     func testWeChatMissingAXSelectionCanFallBackButOtherAppsAndProtectedTargetsCannot() {
         let unavailable = snapshot()
         XCTAssertTrue(SelectionCompatibilityPolicy.canCopyWeChatSelection(bundleIdentifier: "com.tencent.xinWeChat", sourceProcessIdentifier: 42, snapshot: unavailable))

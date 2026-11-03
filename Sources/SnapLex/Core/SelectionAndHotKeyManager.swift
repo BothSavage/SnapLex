@@ -429,6 +429,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         let minimumAge: TimeInterval = isWebProvider ? 0.050 : 0.032
         let deadline = ProcessInfo.processInfo.systemUptime + 0.200
         var previous: SelectionAXSnapshot?
+        var retriedTimeout = false
         while true {
             let snapshot = await accessibilityReader.inspectSelection(
                 processIdentifier: sourceApplication.processIdentifier,
@@ -443,8 +444,15 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             guard !Task.isCancelled, mouseEventAdapter.isCurrent(gesture),
                   applicationGenerationGate.isCurrent(applicationGeneration),
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == sourceApplication.processIdentifier,
-                  !snapshot.timedOut, snapshot.downTarget != .secure, snapshot.upTarget != .secure else {
+                  snapshot.downTarget != .secure, snapshot.upTarget != .secure,
+                  snapshot.focusedTarget != .secure else {
                 return snapshot
+            }
+            if snapshot.timedOut {
+                guard !retriedTimeout else { return snapshot }
+                retriedTimeout = true
+                do { try await Task.sleep(nanoseconds: 40_000_000) } catch { return snapshot }
+                continue
             }
             let now = ProcessInfo.processInfo.systemUptime
             if let previous, now - gesture.up.timestamp >= minimumAge,
@@ -454,9 +462,10 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                snapshot.selectedText != nil {
                 return snapshot
             }
-            // An IPC already consumed the readiness window, or a provider has
-            // no AX text (e.g. WeChat): retain the established fallback policy.
-            if now >= deadline || (snapshot.selectedText == nil && now - gesture.up.timestamp >= minimumAge) {
+            // WeChat uses a verified clipboard fallback when it exposes no AX
+            // text. Other apps may publish their selection several frames late.
+            if now >= deadline || (bundle == "com.tencent.xinWeChat"
+                && snapshot.selectedText == nil && now - gesture.up.timestamp >= minimumAge) {
                 return snapshot
             }
             previous = snapshot
