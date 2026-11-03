@@ -42,13 +42,16 @@ enum PixelPreservingImageRenderer {
     static func capture(
         base: CGImage,
         screenBounds: CGRect,
+        imageRect: CGRect? = nil,
         selection: CGRect,
         drawAnnotations: (CGContext) -> Void
     ) -> NSImage? {
         guard screenBounds.width > 0, screenBounds.height > 0,
               selection.width > 0, selection.height > 0 else { return nil }
-        let scaleX = CGFloat(base.width) / screenBounds.width
-        let scaleY = CGFloat(base.height) / screenBounds.height
+        let imageRect = imageRect ?? screenBounds
+        guard imageRect.width > 0, imageRect.height > 0 else { return nil }
+        let scaleX = CGFloat(base.width) / imageRect.width
+        let scaleY = CGFloat(base.height) / imageRect.height
         let width = (selection.width * scaleX).rounded(.up)
         let height = (selection.height * scaleY).rounded(.up)
         guard width.isFinite, height.isFinite, width > 0, height > 0,
@@ -57,7 +60,7 @@ enum PixelPreservingImageRenderer {
             context.translateBy(x: -selection.minX, y: -selection.minY)
             context.saveGState()
             context.interpolationQuality = .none
-            context.draw(base, in: screenBounds)
+            context.draw(base, in: imageRect)
             context.restoreGState()
             drawAnnotations(context)
         }

@@ -36,6 +36,7 @@ enum SelectionDirectCaptureFlow {
         foregroundProcessIdentifier: @MainActor () -> pid_t?,
         readAccessibility: @MainActor () async -> SelectionAXSnapshot,
         synthesizeCopy: @MainActor () async -> String?,
+        requiresFreshCopy: Bool = false,
         isCurrentRequest: @MainActor () -> Bool = { true }
     ) async -> SelectionDirectCaptureOutcome {
         guard sourceProcessIdentifier != ownProcessIdentifier else {
@@ -59,8 +60,19 @@ enum SelectionDirectCaptureFlow {
             return .suppressed(.timedOutOrWrongProcess, snapshot)
         }
         guard snapshot.downTarget != .secure,
-              snapshot.upTarget != .secure else {
+              snapshot.upTarget != .secure, snapshot.focusedTarget != .secure else {
             return .suppressed(.editableOrUnknownEndpoint, snapshot)
+        }
+
+        if requiresFreshCopy {
+            guard hasAccessibilityPermission() else { return .suppressed(.permissionUnavailable, snapshot) }
+            guard let copied = await synthesizeCopy() else { return .suppressed(.copyDidNotProduceText, snapshot) }
+            guard !Task.isCancelled, isCurrentRequest(), foregroundProcessIdentifier() == sourceProcessIdentifier else {
+                return .cancelledAfterSyntheticCopy(snapshot)
+            }
+            let text = copied.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard SelectionTriggerPolicy.isValidSelectedText(text) else { return .suppressed(.emptyOrInvalidText, snapshot) }
+            return .accepted(text: text, source: .syntheticCopy, snapshot: snapshot)
         }
 
         if let selected = snapshot.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines),

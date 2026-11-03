@@ -62,11 +62,11 @@ enum SelectionClipboardCapture {
     ) -> [Item]? {
         guard canContinue(), maximumBytes >= 0 else { return nil }
         let sourceItems = pasteboard.pasteboardItems ?? []
-        // Avoid asking image/file/promise providers to render expensive data on
+        // Avoid asking file/promise providers to render expensive data on
         // the main thread. Declining the copy preserves the entire clipboard;
         // never snapshot just a convenient subset of its representations.
-        let inexpensiveTypes: Set<NSPasteboard.PasteboardType> = [
-            .string, .rtf, .html,
+        let supportedTypes: Set<NSPasteboard.PasteboardType> = [
+            .string, .rtf, .html, .tiff, .png,
             NSPasteboard.PasteboardType("public.utf8-plain-text"),
             NSPasteboard.PasteboardType("public.utf16-external-plain-text")
         ]
@@ -75,7 +75,7 @@ enum SelectionClipboardCapture {
                   // Private pasteboards used by callers/tests are under their
                   // control and may contain small custom binary representations.
                   item.types.count <= 16 && (pasteboard.name != .general
-                      || item.types.allSatisfy(inexpensiveTypes.contains))
+                      || item.types.allSatisfy(supportedTypes.contains))
               }) else { return nil }
         var bytes = 0
         var items: [Item] = []

@@ -101,6 +101,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         setupHotKeyCallbacks()
         setupLocalShortcutMonitor()
+        scheduleStartupUpdateCheck()
         EscapeKeyManager.shared.start()
         SelectionAndHotKeyManager.shared.start()
         CaptureManager.shared.prewarm()
@@ -280,8 +281,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func scheduleStartupUpdateCheck() {
+        let preferences = AppSettings.shared.capturePreferences
+        guard preferences.checkUpdatesOnStartup else { return }
+        let delay = preferences.updateDelaySeconds
+        Task { @MainActor in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+            }
+            await GitHubReleaseUpdateService.shared.checkForUpdates()
+        }
+    }
+
     private func matches(_ event: NSEvent, shortcut: GlobalShortcut) -> Bool {
         let binding = AppSettings.shared.shortcutBinding(for: shortcut)
+        guard !binding.isUnbound else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let relevantFlags = flags.intersection([.command, .option, .control, .shift])
         return event.keyCode == binding.keyCode && relevantFlags.rawValue == binding.modifiers
@@ -345,6 +359,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         mgr.onTriggerManualPanel = {
             WindowManager.shared.toggleTranslationCard(nearMouse: true, focusInput: true)
+        }
+
+        mgr.onTriggerScreenshotCopy = {
+            WindowManager.shared.triggerScreenshotFlow(copyOnRelease: true)
+        }
+        mgr.onTriggerTogglePins = {
+            PinManager.shared.toggleHideAllPins()
+        }
+        mgr.onTriggerToggleClickThrough = {
+            PinManager.shared.toggleClickThroughOnFocusedPin()
+        }
+        mgr.onTriggerQuickSave = {
+            if !CaptureManager.shared.quickSaveActiveCapture() {
+                PinManager.shared.quickSaveFocusedPin()
+            }
         }
 
         mgr.onOutsideMouseDown = { pt in

@@ -25,7 +25,7 @@ SnapLex brings screen capture and language tools together in a native macOS app.
 
 ### Capture and annotate
 
-- Capture a region with window detection, selection adjustment, a color picker, magnifier, and annotation tools.
+- Capture a region with window detection, selection adjustment, a color picker, pixel magnifier, shortcut guide, and annotation tools.
 - Draw shapes, arrows, and freehand marks; add mosaics, blur, numbered markers, and text. Annotations can be moved, resized, and rotated after placement.
 - Use Apple Vision to remove a background or blur it, recognize text, and scan QR codes and barcodes.
 - Stitch scrolling screenshots as you scroll, then edit, copy, or pin the result.

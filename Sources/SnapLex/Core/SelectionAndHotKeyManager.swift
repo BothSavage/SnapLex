@@ -51,6 +51,10 @@ public final class SelectionAndHotKeyManager: ObservableObject {
     /// Fired when F10 stops active screen recording
     public var onTriggerStopRecording: (() -> Void)?
     public var onTriggerManualPanel: (() -> Void)?
+    public var onTriggerScreenshotCopy: (() -> Void)?
+    public var onTriggerTogglePins: (() -> Void)?
+    public var onTriggerToggleClickThrough: (() -> Void)?
+    public var onTriggerQuickSave: (() -> Void)?
     public var onOutsideMouseDown: ((NSPoint) -> Void)?
 
     private var hotKeyRefs: [EventHotKeyRef?] = []
@@ -312,12 +316,19 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                     lastTime: self.lastAutoPopupTime
                 )
             },
+            requiresFreshCopy: sourceApplication.bundleIdentifier == "com.termius-dmg.mac",
             readCompatibilitySelection: { snapshot in
-                guard SelectionCompatibilityPolicy.canCopyWeChatSelection(
+                let isTermius = sourceApplication.bundleIdentifier == "com.termius-dmg.mac"
+                let safeTermius = isTermius && !snapshot.timedOut
+                    && snapshot.downTarget != .secure && snapshot.upTarget != .secure
+                    && snapshot.focusedTarget != .secure
+                    && snapshot.downProcessIdentifier == processIdentifier
+                    && snapshot.upProcessIdentifier == processIdentifier
+                guard (safeTermius || SelectionCompatibilityPolicy.canCopyWeChatSelection(
                     bundleIdentifier: sourceApplication.bundleIdentifier,
                     sourceProcessIdentifier: processIdentifier,
                     snapshot: snapshot
-                ), self.isAccessibilityTrusted(prompt: false) else { return nil }
+                )), self.isAccessibilityTrusted(prompt: false) else { return nil }
                 return await SelectionClipboardCapture.readSelection(
                     from: .general,
                     canContinue: {
@@ -369,8 +380,8 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             traceMouseSelectionOutcome("accepted characters=\(snapshot.selectedText?.count ?? 0) axMs=\(snapshot.durationMilliseconds)", requestID: requestID)
         case let .acceptedByCompatibilityCopy(text, snapshot):
             logMouseAccessibilitySnapshot(snapshot, requestID: requestID)
-            selectionLogger.info("mouse selection accepted request=\(requestID, privacy: .public) capture=wechat-copy characters=\(text.count, privacy: .public) sourcePID=\(processIdentifier, privacy: .public)")
-            traceMouseSelectionOutcome("accepted capture=wechat-copy characters=\(text.count)", requestID: requestID)
+            selectionLogger.info("mouse selection accepted request=\(requestID, privacy: .public) capture=compatibility-copy characters=\(text.count, privacy: .public) sourcePID=\(processIdentifier, privacy: .public)")
+            traceMouseSelectionOutcome("accepted capture=compatibility-copy characters=\(text.count)", requestID: requestID)
         }
     }
 
@@ -498,6 +509,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
                     sendCopy: { self.simulateCmdC() }
                 )
             },
+            requiresFreshCopy: frontApp.bundleIdentifier == "com.termius-dmg.mac",
             isCurrentRequest: {
                 self.mouseGestureGenerationGate.isCurrent(generation)
                     && self.applicationGenerationGate.isCurrent(applicationGeneration)
@@ -671,6 +683,7 @@ public final class SelectionAndHotKeyManager: ObservableObject {
         if flags.contains(.option) { carbonModifiers |= UInt32(optionKey) }
         if flags.contains(.shift) { carbonModifiers |= UInt32(shiftKey) }
         if flags.contains(.control) { carbonModifiers |= UInt32(controlKey) }
+        guard !binding.isUnbound else { return }
         let status = RegisterEventHotKey(
             UInt32(binding.keyCode),
             carbonModifiers,
@@ -727,6 +740,14 @@ public final class SelectionAndHotKeyManager: ObservableObject {
             onTriggerScreenRecorder?()
         case 10:
             onTriggerStopRecording?()
+        case 11:
+            onTriggerScreenshotCopy?()
+        case 12:
+            onTriggerTogglePins?()
+        case 13:
+            onTriggerToggleClickThrough?()
+        case 14:
+            onTriggerQuickSave?()
         default:
             break
         }

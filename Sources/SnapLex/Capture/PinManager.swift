@@ -425,16 +425,20 @@ public final class PinManager: ObservableObject {
         at screenRect: NSRect? = nil,
         startWithInPlaceTranslation: Bool = false,
         startWithOCRSidebar: Bool = false,
-        startWithShadow: Bool = true
+        startWithShadow: Bool? = nil
     ) -> PinnedImageWindow {
+        let preferences = AppSettings.shared.capturePreferences
+        let shadow = startWithShadow ?? preferences.pinShadow
+        let maxSide = CGFloat(preferences.pinMaxSide)
         let targetRect: NSRect
 
         if let screenRect = screenRect {
+            let fitted = Self.fitting(screenRect, maxSide: maxSide)
             targetRect = NSRect(
-                x: screenRect.minX,
-                y: screenRect.minY,
-                width: max(80, screenRect.width),
-                height: max(60, screenRect.height)
+                x: fitted.minX,
+                y: fitted.minY,
+                width: max(80, min(maxSide, fitted.width)),
+                height: max(60, min(maxSide, fitted.height))
             )
         } else {
             let mouse = NSEvent.mouseLocation
@@ -442,7 +446,8 @@ public final class PinManager: ObservableObject {
             let vFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
             let imgW = max(80, image.size.width)
             let imgH = max(60, image.size.height)
-            let fitScale = min(1.0, min((vFrame.width * 0.78) / imgW, (vFrame.height * 0.78) / imgH))
+            let sideScale = min(1.0, maxSide / max(imgW, imgH))
+            let fitScale = min(sideScale, (vFrame.width * 0.78) / imgW, (vFrame.height * 0.78) / imgH)
             let w = round(max(80, imgW * fitScale))
             let h = round(max(60, imgH * fitScale))
             let x = round(max(vFrame.minX + 20, min(mouse.x - w / 2, vFrame.maxX - w - 20)))
@@ -450,7 +455,7 @@ public final class PinManager: ObservableObject {
             targetRect = NSRect(x: x, y: y, width: w, height: h)
         }
 
-        let win = PinnedImageWindow(image: image, initialRect: targetRect, startWithShadow: startWithShadow)
+        let win = PinnedImageWindow(image: image, initialRect: targetRect, startWithShadow: shadow)
         activePins.append(win)
         allPinsHidden = false
         win.makeKeyAndOrderFront(nil)
@@ -532,6 +537,28 @@ public final class PinManager: ObservableObject {
         for pin in activePins {
             pin.setClickThrough(false)
         }
+    }
+
+    public func toggleClickThroughOnFocusedPin() {
+        let pin = activePins.first(where: \.isKeyWindow) ?? activePins.last
+        pin?.toggleMouseClickThrough()
+    }
+
+    public func quickSaveFocusedPin() {
+        let pin = activePins.first(where: \.isKeyWindow) ?? activePins.last
+        pin?.quickSaveToPreferredFolder()
+    }
+
+    private static func fitting(_ rect: NSRect, maxSide: CGFloat) -> NSRect {
+        let longest = max(rect.width, rect.height)
+        guard longest > maxSide, longest > 0 else { return rect }
+        let scale = maxSide / longest
+        return NSRect(
+            x: rect.midX - rect.width * scale / 2,
+            y: rect.midY - rect.height * scale / 2,
+            width: rect.width * scale,
+            height: rect.height * scale
+        )
     }
 
     public func closeAllPins() {
@@ -637,6 +664,8 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         self.originalImage = image
         self.baseAspectSize = NSRect(origin: .zero, size: image.size).size
         self.viewModel = PinnedWindowViewModel(originalImage: image)
+        let initialOpacity = CGFloat(AppSettings.shared.capturePreferences.pinOpacityPercent) / 100
+        self.viewModel.opacity = initialOpacity
 
         super.init(
             contentRect: initialRect,
@@ -653,6 +682,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         self.isOpaque = false
         self.hasShadow = startWithShadow
         self.viewModel.hasWindowShadow = startWithShadow
+        self.alphaValue = CGFloat(AppSettings.shared.capturePreferences.pinOpacityPercent) / 100
         self.isMovableByWindowBackground = true
         self.isReleasedWhenClosed = false
         self.delegate = self
@@ -1141,7 +1171,7 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         if viewModel.isMinimized {
             hideOuterToolbar()
             preMinimizeFrame = frame
-            let thumbSize: CGFloat = 54
+            let thumbSize = CGFloat(AppSettings.shared.capturePreferences.thumbnailSize)
             let newOrigin = NSPoint(x: frame.midX - thumbSize / 2, y: frame.midY - thumbSize / 2)
             setFrame(NSRect(origin: newOrigin, size: NSSize(width: thumbSize, height: thumbSize)), display: true, animate: true)
         } else {
@@ -1214,8 +1244,9 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
                 removeChildWindow(pill)
                 pill.orderOut(nil)
             }
-            viewModel.opacity = 1.0
-            self.alphaValue = 1.0
+            let opacity = CGFloat(AppSettings.shared.capturePreferences.pinOpacityPercent) / 100
+            viewModel.opacity = opacity
+            self.alphaValue = opacity
             viewModel.showHUD(L10n.string("已解除鼠标穿透"))
         }
     }
@@ -1270,6 +1301,28 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         }
     }
 
+    public func toggleMouseClickThrough() {
+        setClickThrough(!viewModel.isClickThrough)
+    }
+
+    public func quickSaveToPreferredFolder() {
+        viewModel.commitInlineTextIfNeeded()
+        let image = viewModel.renderFlattenedImage()
+        let preferences = AppSettings.shared.capturePreferences
+        let directory = preferences.quickSaveDirectoryURL()
+        let pattern = preferences.fileNamePattern
+        let notify = preferences.quickSaveNotification
+        Task { @MainActor in
+            let url = await PNGImageWriter.export(image, to: directory, pattern: pattern)
+            guard notify else { return }
+            if let url {
+                self.viewModel.showHUD(L10n.format("已快速保存到 %@", url.lastPathComponent))
+            } else {
+                self.viewModel.showHUD(L10n.string("快速保存失败"))
+            }
+        }
+    }
+
     public func copyImageToClipboard() {
         viewModel.commitInlineTextIfNeeded()
         let img = viewModel.renderFlattenedImage()
@@ -1285,9 +1338,10 @@ public final class PinnedImageWindow: NSPanel, NSWindowDelegate {
         guard let imageSnapshot = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        panel.nameFieldStringValue = "SnapLex_Pin_\(formatter.string(from: Date())).png"
+        panel.nameFieldStringValue = SnapPreferences.fileName(
+            pattern: AppSettings.shared.capturePreferences.fileNamePattern,
+            at: Date()
+        )
         if panel.runModal() == .OK, let url = panel.url {
             Task { [weak self] in
                 let saved = await PNGImageWriter.write(imageSnapshot, to: url)

@@ -23,6 +23,7 @@ enum SelectionMouseSelectionFlow {
         waitForSelectionToSettle: @MainActor () async -> Void,
         readAccessibility: @MainActor (SelectionMouseGestureSnapshot) async -> SelectionAXSnapshot,
         isDuplicate: @MainActor (String, TimeInterval) -> Bool,
+        requiresFreshCopy: Bool = false,
         readCompatibilitySelection: @MainActor (SelectionAXSnapshot) async -> String? = { _ in nil },
         onAccepted: @MainActor (String) -> Void
     ) async -> SelectionMouseFlowOutcome {
@@ -62,6 +63,25 @@ enum SelectionMouseSelectionFlow {
         }
         guard isEnabled() else {
             return .suppressedAfterAccessibility(.settingDisabled, snapshot)
+        }
+
+        if requiresFreshCopy {
+            guard let copiedText = await readCompatibilitySelection(snapshot) else {
+                return .suppressedAfterAccessibility(.emptyOrInvalidText, snapshot)
+            }
+            guard isCurrentGesture(), foregroundProcessIdentifier() == sourceProcessIdentifier else {
+                return .cancelledAfterAccessibility(snapshot)
+            }
+            guard isEnabled() else { return .suppressedAfterAccessibility(.settingDisabled, snapshot) }
+            let text = copiedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard SelectionTriggerPolicy.isValidSelectedText(text) else {
+                return .suppressedAfterAccessibility(.emptyOrInvalidText, snapshot)
+            }
+            guard !isDuplicate(text, gesture.up.timestamp) else {
+                return .suppressedAfterAccessibility(.duplicate, snapshot)
+            }
+            onAccepted(text)
+            return .acceptedByCompatibilityCopy(text: text, snapshot: snapshot)
         }
 
         let candidateText = snapshot.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines)

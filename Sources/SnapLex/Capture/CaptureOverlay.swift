@@ -3,6 +3,7 @@ import SwiftUI
 import CoreGraphics
 import CoreText
 import QuartzCore
+import ImageIO
 
 // MARK: - Ultra-Fast In-Memory Screen Capture Bridge (Zero Subprocess, Zero Disk I/O, Zero PNG Encode)
 
@@ -104,8 +105,13 @@ public final class CaptureManager: NSObject {
         reusableWindow?.appearance = appearance
     }
 
-    public func startCapture(openRecordingSubbar: Bool = false) {
-        guard !isCapturing else { return }
+    public func startCapture(openRecordingSubbar: Bool = false, copyOnRelease: Bool = false) {
+        if isCapturing {
+            if copyOnRelease {
+                reusableWindow?.canvasView.copyNowOrArm()
+            }
+            return
+        }
 
         // The system permission dialog must be presented before the high-level
         // screenshot panel. Otherwise the screenSaver-level panel can cover the
@@ -120,7 +126,7 @@ public final class CaptureManager: NSObject {
             return
         }
         isCapturing = true
-        showCapture(on: screen, openRecordingSubbar: openRecordingSubbar)
+        showCapture(on: screen, openRecordingSubbar: openRecordingSubbar, copyOnRelease: copyOnRelease)
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.followMouseAcrossScreens() }
         }
@@ -133,10 +139,11 @@ public final class CaptureManager: NSObject {
         let point = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }),
               screen.frame != activeScreenFrame else { return }
-        showCapture(on: screen, openRecordingSubbar: false)
+        let copyOnRelease = reusableWindow?.canvasView.copyOnRelease ?? false
+        showCapture(on: screen, openRecordingSubbar: false, copyOnRelease: copyOnRelease)
     }
 
-    private func showCapture(on screen: NSScreen, openRecordingSubbar: Bool) {
+    private func showCapture(on screen: NSScreen, openRecordingSubbar: Bool, copyOnRelease: Bool) {
         let screenFrame = screen.frame
         activeScreenFrame = screenFrame
 
@@ -165,7 +172,8 @@ public final class CaptureManager: NSObject {
             screenFrame: screenFrame,
             visibleFrame: screen.visibleFrame,
             detectedWindows: detectedWindows,
-            openRecordingSubbar: openRecordingSubbar
+            openRecordingSubbar: openRecordingSubbar,
+            copyOnRelease: copyOnRelease
         )
         let sessionID = window.canvasView.sessionID
 
@@ -202,6 +210,13 @@ public final class CaptureManager: NSObject {
     public func pinActiveSelectionIfCapturing() -> Bool {
         guard isCapturing, let overlay = reusableWindow else { return false }
         overlay.canvasView.triggerPinAction()
+        return true
+    }
+
+    /// Consumes the shortcut while a capture is open, even when there is nothing to save yet.
+    public func quickSaveActiveCapture() -> Bool {
+        guard isCapturing, let overlay = reusableWindow else { return false }
+        overlay.canvasView.quickSaveSelection()
         return true
     }
 
@@ -344,6 +359,7 @@ public enum CaptureVisionToolAction: Equatable {
 public final class CaptureCanvasView: NSView {
     private var screenOrigin: CGPoint
     private var cgImage: CGImage?
+    private var capturedImageRect: CGRect = .zero
     private var detectedWindows: [DetectedWindowInfo] = []
     private let backgroundLayerProvider: () -> CALayer?
     private let onFinish: () -> Void
@@ -384,12 +400,32 @@ public final class CaptureCanvasView: NSView {
     }
     public var hasLockedSelection: Bool = false
     var canSwitchScreens: Bool {
-        guard !hasLockedSelection else { return false }
+        guard !hasLockedSelection, liveCaptureState == nil else { return false }
         if case .none = interaction { return true }
         return false
     }
     private var hoveredWindow: DetectedWindowInfo?
     private var mouseLocationInView: CGPoint = .zero
+    private var capturedCursor: (image: NSImage, rect: CGRect)?
+    private var showsCapturedCursor = false
+    var copyOnRelease = false
+
+    private struct LiveCaptureState {
+        let image: CGImage
+        let selection: CGRect
+        let locked: Bool
+        let annotations: [SnipAnnotationItem]
+        let redoStack: [SnipAnnotationItem]
+        let tool: SnipAnnotationTool
+        let counter: Int
+        let windows: [DetectedWindowInfo]
+        let showsCursor: Bool
+    }
+    private var liveCaptureState: LiveCaptureState?
+    private var replayRecords: [ScreenshotHistoryRecord] = []
+    private var replayIndex = -1
+    private var replayLoadToken = UUID()
+    private let screenshotHistory: ScreenshotHistoryStore
 
     // Drag / Resize state
     private enum DragInteraction {
@@ -473,10 +509,12 @@ public final class CaptureCanvasView: NSView {
         frame: NSRect,
         screenOrigin: CGPoint,
         backgroundLayerProvider: @escaping () -> CALayer?,
+        screenshotHistory: ScreenshotHistoryStore? = nil,
         onFinish: @escaping () -> Void
     ) {
         self.screenOrigin = screenOrigin
         self.backgroundLayerProvider = backgroundLayerProvider
+        self.screenshotHistory = screenshotHistory ?? .shared
         self.onFinish = onFinish
         super.init(frame: frame)
 
@@ -498,9 +536,11 @@ public final class CaptureCanvasView: NSView {
         screenFrame: NSRect,
         visibleFrame: NSRect? = nil,
         detectedWindows: [DetectedWindowInfo],
-        openRecordingSubbar: Bool = false
+        openRecordingSubbar: Bool = false,
+        copyOnRelease: Bool = false
     ) {
         sessionID = UUID()
+        self.copyOnRelease = copyOnRelease
         isApplyingImageEffect = false
         isScanningBarcodes = false
         self.frame = NSRect(origin: .zero, size: screenFrame.size)
@@ -514,7 +554,14 @@ public final class CaptureCanvasView: NSView {
         }
         self.detectedWindows = detectedWindows
         self.cgImage = nil
+        self.capturedImageRect = bounds
         self.backgroundLayerProvider()?.contents = nil
+        self.backgroundLayerProvider()?.contentsGravity = .resize
+        self.liveCaptureState = nil
+        self.replayRecords = []
+        self.replayIndex = -1
+        self.replayLoadToken = UUID()
+        self.showsCapturedCursor = false
 
         self.hasLockedSelection = false
         self.selectionRect = .zero
@@ -533,6 +580,15 @@ public final class CaptureCanvasView: NSView {
         self.mouseLocationInView = CGPoint(
             x: mouseScreen.x - screenOrigin.x,
             y: mouseScreen.y - screenOrigin.y
+        )
+        let cursor = NSCursor.currentSystem ?? NSCursor.arrow
+        self.capturedCursor = (
+            cursor.image,
+            CGRect(
+                x: mouseLocationInView.x - cursor.hotSpot.x,
+                y: mouseLocationInView.y - (cursor.image.size.height - cursor.hotSpot.y),
+                width: cursor.image.size.width, height: cursor.image.size.height
+            )
         )
         self.hoveredWindow = detectedWindows.first(where: { $0.frameInScreen.contains(mouseLocationInView) })
 
@@ -557,13 +613,23 @@ public final class CaptureCanvasView: NSView {
 
     public func setCapturedCGImage(_ image: CGImage) {
         self.cgImage = image
-        // Upload 3600x2338 CGImage ONCE to the GPU background CALayer — zero CPU redraw on mouse move!
-        self.backgroundLayerProvider()?.contents = image
+        let layer = backgroundLayerProvider()
+        // A live screen capture fills the overlay. A history image keeps its aspect ratio.
+        let fillsScreen = abs(capturedImageRect.width - bounds.width) < 0.5
+            && abs(capturedImageRect.height - bounds.height) < 0.5
+        layer?.contentsGravity = fillsScreen ? .resize : .resizeAspect
+        layer?.contents = image
         self.needsDisplay = true
     }
 
     public func clearSession() {
         sessionID = UUID()
+        replayLoadToken = UUID()
+        liveCaptureState = nil
+        replayRecords = []
+        replayIndex = -1
+        capturedCursor = nil
+        showsCapturedCursor = false
         isApplyingImageEffect = false
         isScanningBarcodes = false
         commitInlineTextIfNeeded()
@@ -828,9 +894,15 @@ public final class CaptureCanvasView: NSView {
             ? selectionRect
             : hoveredWindow?.frameInScreen
 
+        let capturePreferences = AppSettings.shared.capturePreferences
         // 2. Draw dark dimming overlay outside activeRect
         ctx.saveGState()
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
+        ctx.setFillColor(NSColor(
+            srgbRed: capturePreferences.maskRed,
+            green: capturePreferences.maskGreen,
+            blue: capturePreferences.maskBlue,
+            alpha: capturePreferences.maskAlpha
+        ).cgColor)
         if let rect = activeRect, rect.width > 1, rect.height > 1 {
             let path = CGMutablePath()
             path.addRect(bounds)
@@ -841,6 +913,10 @@ public final class CaptureCanvasView: NSView {
             ctx.fill(bounds)
         }
         ctx.restoreGState()
+
+        if showsCapturedCursor, liveCaptureState == nil {
+            drawCapturedCursor(in: ctx)
+        }
 
         // 3. Draw annotations clipped inside selectionRect
         if let rect = activeRect, rect.width > 2, rect.height > 2 {
@@ -868,7 +944,8 @@ public final class CaptureCanvasView: NSView {
                 color: NSColor.black.withAlphaComponent(0.75).cgColor
             )
             ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.65).cgColor)
-            ctx.setLineWidth(hasLockedSelection ? 3.6 : 4.0)
+            let borderWidth = CGFloat(capturePreferences.borderWidth)
+            ctx.setLineWidth(borderWidth + 1.6)
             ctx.stroke(borderRect)
             ctx.restoreGState()
 
@@ -877,12 +954,12 @@ public final class CaptureCanvasView: NSView {
                 ? NSColor.white
                 : NSColor.white.withAlphaComponent(0.95)
             ctx.setStrokeColor(borderColor.cgColor)
-            ctx.setLineWidth(hasLockedSelection ? 1.8 : 2.2)
+            ctx.setLineWidth(borderWidth)
             ctx.stroke(borderRect)
             ctx.restoreGState()
 
             // 5. 8 Resize handles when selection is locked
-            if hasLockedSelection {
+            if hasLockedSelection, capturePreferences.showAnchors {
                 drawResizeHandles(for: rect, in: ctx)
             }
 
@@ -916,12 +993,26 @@ public final class CaptureCanvasView: NSView {
             drawHoveredWindowCandidateBadge(for: hovered)
         }
 
-        // 7. Draw Capture Pixel Magnifier + Color Picker HUD ONLY while selecting or resizing
-        // (Never show when selection is finished and user moves mouse to click the toolbar!)
+        if capturePreferences.showCrossLines, !isRecordingSubbarExpanded {
+            drawFullscreenCrossLines(at: mouseLocationInView, in: ctx)
+        }
+
+        let guideFrame = shortcutGuideFrame
+        if capturePreferences.showKeyTips, !guideFrame.isNull {
+            CaptureShortcutGuideRenderer.draw(in: ctx, frame: guideFrame)
+        }
+
+        // Keep pixel inspection available inside the selection; leave the toolbar unobstructed.
         let shouldShowLoupe: Bool = {
+            if let toolbar = toolbarHostingView, !toolbar.isHidden,
+               toolbar.frame.insetBy(dx: -12, dy: -12).contains(mouseLocationInView) { return false }
             if !hasLockedSelection { return true }
             if case .creatingSelection = interaction { return true }
             if case .resizingSelection = interaction { return true }
+            if currentTool == .selectMove, !isRecordingSubbarExpanded {
+                return selectionRect.contains(mouseLocationInView)
+                    || hitTestResizeHandle(at: mouseLocationInView, in: selectionRect) != nil
+            }
             return false
         }()
         if shouldShowLoupe {
@@ -942,7 +1033,13 @@ public final class CaptureCanvasView: NSView {
             let hRect = CGRect(x: pt.x - handleRadius, y: pt.y - handleRadius, width: handleRadius * 2, height: handleRadius * 2)
             ctx.setFillColor(NSColor.white.cgColor)
             ctx.fillEllipse(in: hRect)
-            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.85).cgColor)
+            let anchor = AppSettings.shared.capturePreferences
+            ctx.setStrokeColor(NSColor(
+                srgbRed: anchor.anchorBorderRed,
+                green: anchor.anchorBorderGreen,
+                blue: anchor.anchorBorderBlue,
+                alpha: anchor.anchorBorderAlpha
+            ).cgColor)
             ctx.setLineWidth(1.5)
             ctx.strokeEllipse(in: hRect)
         }
@@ -1015,142 +1112,154 @@ public final class CaptureCanvasView: NSView {
         str.draw(at: CGPoint(x: pillRect.minX + padX, y: pillRect.minY + padY))
     }
 
-    // MARK: - Zero-Loop Hardware-Cropped 11x11 Pixel Magnifier & Color Picker HUD
+    // MARK: - Pixel magnifier and color picker
+
+    private var shortcutGuideFrame: CGRect {
+        guard !isRecordingSubbarExpanded else { return .null }
+        return CaptureShortcutGuideRenderer.frame(in: bounds, bottomInset: dockBottomInset)
+    }
+
+    private var selectionLimit: CGRect {
+        let rect = capturedImageRect
+        guard rect.width > 1, rect.height > 1 else { return bounds }
+        return rect
+    }
+
+    private var sourceImageSize: CGSize {
+        guard let cgImage else { return bounds.size }
+        return CGSize(width: cgImage.width, height: cgImage.height)
+    }
+
+    private var pixelStep: CGSize {
+        CapturePixelGeometry.step(imageSize: sourceImageSize, imageRect: capturedImageRect)
+    }
+
+    private func sourcePixel(at point: CGPoint) -> CGPoint {
+        CapturePixelGeometry.pixel(at: point, imageSize: sourceImageSize, imageRect: capturedImageRect)
+    }
 
     private func drawPixelMagnifierHUD(at cursor: CGPoint, in ctx: CGContext) {
-        guard let cgImage = cgImage else { return }
-
-        let hudWidth: CGFloat = 154
-        let loupeHeight: CGFloat = 104
-        let infoHeight: CGFloat = 68
-        let hudHeight = loupeHeight + infoHeight
-
-        var hx = cursor.x + 20
-        var hy = cursor.y - hudHeight - 20
-        if hx + hudWidth > bounds.width - 12 {
-            hx = cursor.x - hudWidth - 20
-        }
-        if hy < 12 {
-            hy = cursor.y + 20
-        }
-
-        let hudRect = CGRect(x: hx, y: hy, width: hudWidth, height: hudHeight)
-        ctx.saveGState()
-
-        let clipPath = CGPath(roundedRect: hudRect, cornerWidth: 10, cornerHeight: 10, transform: nil)
-        ctx.addPath(clipPath)
-        ctx.clip()
-
-        ctx.setFillColor(themeBackground.cgColor)
-        ctx.fill(hudRect)
-
-        // Draw magnified 11x11 pixel grid via single CGImage crop with .none interpolation (0.01ms!)
-        let loupeRect = CGRect(x: hx, y: hy + infoHeight, width: hudWidth, height: loupeHeight)
-        let scaleX = CGFloat(cgImage.width) / max(1, bounds.width)
-        let scaleY = CGFloat(cgImage.height) / max(1, bounds.height)
-        let centerPxX = max(5, min(cgImage.width - 6, Int(round(cursor.x * scaleX))))
-        let centerPxY = max(5, min(cgImage.height - 6, Int(round((bounds.height - cursor.y) * scaleY))))
-        let gridRadius = 5
-        let gridCount = CGFloat(gridRadius * 2 + 1)
-        let cellW = loupeRect.width / gridCount
-        let cellH = loupeRect.height / gridCount
-
-        let cropRect = CGRect(
-            x: centerPxX - gridRadius,
-            y: centerPxY - gridRadius,
-            width: gridRadius * 2 + 1,
-            height: gridRadius * 2 + 1
-        )
-        if let subImg = cgImage.cropping(to: cropRect) {
-            ctx.saveGState()
-            ctx.interpolationQuality = .none
-            ctx.draw(subImg, in: loupeRect)
-            ctx.restoreGState()
-        }
-
-        // Crosshair at center pixel (Crisp White with dark contrast outline)
-        let centerCellRect = CGRect(
-            x: loupeRect.minX + CGFloat(gridRadius) * cellW,
-            y: loupeRect.maxY - CGFloat(gridRadius + 1) * cellH,
-            width: cellW,
-            height: cellH
-        )
-        ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.75).cgColor)
-        ctx.setLineWidth(2.8)
-        ctx.stroke(centerCellRect)
-        ctx.setStrokeColor(NSColor.white.cgColor)
-        ctx.setLineWidth(1.5)
-        ctx.stroke(centerCellRect)
-
-        // Fast 1x1 pixel RGB sample
+        guard let cgImage, capturedImageRect.contains(cursor) else { return }
         let (r, g, b, sampledColor) = sampleRGB(at: cursor)
         let colorCode = colorFormat.format(r: r, g: g, b: b)
+        let copyHint = L10n.string("按 C 复制色值")
+        let formatHint = L10n.format("按 Shift 切换 %@", L10n.string(colorFormat.next().rawValue))
+        let textWidth = max(CaptureShortcutGuideRenderer.width(of: copyHint, size: 11),
+                            CaptureShortcutGuideRenderer.width(of: formatHint, size: 11))
+        let hudWidth = max(170, min(260, max(textWidth + 24, CGFloat(colorCode.count) * 7.3 + 40)))
+        let infoHeight: CGFloat = 94
+        let loupeHeight: CGFloat = 143
+        let hudRect = CapturePixelGeometry.hudFrame(
+            at: cursor, size: CGSize(width: hudWidth, height: loupeHeight + infoHeight), within: bounds,
+            avoiding: shortcutGuideFrame
+        )
+        let hx = hudRect.minX
+        let hy = hudRect.minY
+        let path = CGPath(roundedRect: hudRect, cornerWidth: 9, cornerHeight: 9, transform: nil)
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: -3), blur: 12, color: NSColor.black.withAlphaComponent(0.3).cgColor)
+        ctx.setFillColor(NSColor(calibratedWhite: 0.075, alpha: 0.97).cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+        ctx.addPath(path)
+        ctx.clip()
 
-        let coordText = "POS: (\(Int(cursor.x)), \(Int(bounds.height - cursor.y)))"
-        let hintText = L10n.format("[C] 复制色值  [Shift] 切换%@", L10n.string(colorFormat.next().rawValue))
+        // Each source pixel occupies a square, including at the display edges.
+        // Clip the source crop instead of shifting its center away from the cursor.
+        let count: CGFloat = 13
+        let cell: CGFloat = 11
+        let pixel = sourcePixel(at: cursor)
+        let loupeRect = CGRect(x: hx + (hudWidth - loupeHeight) / 2, y: hy + infoHeight,
+                               width: loupeHeight, height: loupeHeight)
+        let requested = CGRect(x: pixel.x - 6, y: pixel.y - 6, width: count, height: count)
+        let crop = requested.intersection(CGRect(origin: .zero, size: sourceImageSize))
+        ctx.saveGState()
+        ctx.clip(to: loupeRect)
+        if let image = cgImage.cropping(to: crop) {
+            ctx.interpolationQuality = .none
+            ctx.draw(image, in: CGRect(
+                x: loupeRect.minX + (crop.minX - requested.minX) * cell,
+                y: loupeRect.maxY - (crop.maxY - requested.minY) * cell,
+                width: crop.width * cell, height: crop.height * cell
+            ))
+        }
+        drawMagnifierSelectionDecorations(loupeRect: loupeRect, requested: requested, cell: cell, in: ctx)
+        ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.14).cgColor)
+        ctx.setLineWidth(0.5)
+        for index in 1..<Int(count) {
+            let offset = CGFloat(index) * cell
+            ctx.move(to: CGPoint(x: loupeRect.minX + offset, y: loupeRect.minY))
+            ctx.addLine(to: CGPoint(x: loupeRect.minX + offset, y: loupeRect.maxY))
+            ctx.move(to: CGPoint(x: loupeRect.minX, y: loupeRect.minY + offset))
+            ctx.addLine(to: CGPoint(x: loupeRect.maxX, y: loupeRect.minY + offset))
+        }
+        ctx.strokePath()
+        ctx.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.8).cgColor)
+        ctx.setLineWidth(1)
+        ctx.move(to: CGPoint(x: loupeRect.minX, y: loupeRect.midY))
+        ctx.addLine(to: CGPoint(x: loupeRect.maxX, y: loupeRect.midY))
+        ctx.move(to: CGPoint(x: loupeRect.midX, y: loupeRect.minY))
+        ctx.addLine(to: CGPoint(x: loupeRect.midX, y: loupeRect.maxY))
+        ctx.strokePath()
+        let centerCell = CGRect(x: loupeRect.midX - cell / 2, y: loupeRect.midY - cell / 2, width: cell, height: cell)
+        ctx.setStrokeColor(NSColor.black.cgColor)
+        ctx.setLineWidth(3)
+        ctx.stroke(centerCell)
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.setLineWidth(1)
+        ctx.stroke(centerCell)
+        ctx.restoreGState()
 
-        let swatchRect = CGRect(x: hx + 10, y: hy + infoHeight - 22, width: 14, height: 14)
+        let swatch = CGRect(x: hx + 12, y: hy + 54, width: 13, height: 13)
         ctx.setFillColor(sampledColor.cgColor)
-        ctx.fill(swatchRect)
+        ctx.fill(swatch)
         ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.8).cgColor)
         ctx.setLineWidth(1)
-        ctx.stroke(swatchRect)
-
-        // Draw directly with Core Text. NSAttributedString.draw(at:) routes
-        // through AppKit's typesetter during every overlay redraw and has
-        // crashed here with an NSInvalidArgumentException on macOS 26.
+        ctx.stroke(swatch)
         MagnifierHUDTextRenderer.draw(
-            colorCode,
-            fontName: "Menlo-Bold",
-            fontSize: 11,
-            color: themeForeground.cgColor,
-            at: CGPoint(x: hx + 30, y: hy + infoHeight - 22),
-            in: ctx
+            "(\(Int(pixel.x)), \(Int(pixel.y)))", fontName: "Menlo", fontSize: 11,
+            color: NSColor.white.withAlphaComponent(0.75).cgColor,
+            at: CGPoint(x: hx + 12, y: hy + 76), in: ctx
         )
         MagnifierHUDTextRenderer.draw(
-            coordText,
-            fontName: "Menlo",
-            fontSize: 10,
-            color: themeForeground.withAlphaComponent(0.72).cgColor,
-            at: CGPoint(x: hx + 10, y: hy + infoHeight - 42),
-            in: ctx
+            colorCode, fontName: "Menlo-Bold", fontSize: 11, color: NSColor.white.cgColor,
+            at: CGPoint(x: hx + 33, y: hy + 55), in: ctx
         )
-        MagnifierHUDTextRenderer.draw(
-            hintText,
-            fontName: "HelveticaNeue-Medium",
-            fontSize: 9.5,
-            color: themeForeground.cgColor,
-            at: CGPoint(x: hx + 10, y: hy + 8),
-            in: ctx
-        )
-
-        ctx.setStrokeColor(SnapLexTheme.appKitToolbarBorder(for: effectiveAppearance).cgColor)
-        ctx.setLineWidth(1.2)
-        ctx.addPath(clipPath)
+        for (text, y) in [(copyHint, hy + 31), (formatHint, hy + 13)] {
+            MagnifierHUDTextRenderer.draw(
+                text, fontName: "HelveticaNeue-Medium", fontSize: 11,
+                color: NSColor.white.withAlphaComponent(0.85).cgColor,
+                at: CGPoint(x: hx + 12, y: y), in: ctx
+            )
+        }
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.25).cgColor)
+        ctx.addPath(path)
         ctx.strokePath()
-
         ctx.restoreGState()
     }
 
     private func sampleRGB(at viewPoint: CGPoint) -> (Int, Int, Int, NSColor) {
-        guard let cgImage = cgImage, let pixelCtx = singlePixelContext, let data = pixelCtx.data else {
+        guard let cgImage, let pixelCtx = singlePixelContext, let data = pixelCtx.data else {
             return (0, 0, 0, .black)
         }
-        let scaleX = CGFloat(cgImage.width) / max(1, bounds.width)
-        let scaleY = CGFloat(cgImage.height) / max(1, bounds.height)
-        let px = max(0, min(cgImage.width - 1, Int(round(viewPoint.x * scaleX))))
-        let py = max(0, min(cgImage.height - 1, Int(round((bounds.height - viewPoint.y) * scaleY))))
-
-        if let onePx = cgImage.cropping(to: CGRect(x: px, y: py, width: 1, height: 1)) {
+        let pixel = sourcePixel(at: viewPoint)
+        if let onePx = cgImage.cropping(to: CGRect(origin: pixel, size: CGSize(width: 1, height: 1))) {
+            pixelCtx.setBlendMode(.copy)
             pixelCtx.draw(onePx, in: CGRect(x: 0, y: 0, width: 1, height: 1))
             let ptr = data.assumingMemoryBound(to: UInt8.self)
-            let r = Int(ptr[0])
-            let g = Int(ptr[1])
-            let b = Int(ptr[2])
-            let color = NSColor(srgbRed: CGFloat(r) / 255.0, green: CGFloat(g) / 255.0, blue: CGFloat(b) / 255.0, alpha: 1.0)
-            return (r, g, b, color)
+            let r = Int(ptr[0]), g = Int(ptr[1]), b = Int(ptr[2])
+            return (r, g, b, NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1))
         }
         return (0, 0, 0, .black)
+    }
+
+    private func drawCapturedCursor(in context: CGContext) {
+        guard showsCapturedCursor, liveCaptureState == nil, let cursor = capturedCursor else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        cursor.image.draw(in: cursor.rect)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private func drawToast(_ text: String) {
@@ -1474,6 +1583,7 @@ public final class CaptureCanvasView: NSView {
 
     override public func mouseMoved(with event: NSEvent) {
         mouseLocationInView = convert(event.locationInWindow, from: nil)
+        if currentTool == .selectMove { needsDisplay = true }
         if !hasLockedSelection {
             hoveredWindow = detectedWindows.first(where: { $0.frameInScreen.contains(mouseLocationInView) })
             needsDisplay = true
@@ -1523,6 +1633,7 @@ public final class CaptureCanvasView: NSView {
         }
 
         if !hasLockedSelection {
+            guard !shortcutGuideFrame.contains(pt) else { return }
             interaction = .creatingSelection(start: pt)
             return
         }
@@ -1608,7 +1719,10 @@ public final class CaptureCanvasView: NSView {
     override public func mouseDragged(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
         mouseLocationInView = pt
+        updateDrag(to: pt)
+    }
 
+    private func updateDrag(to pt: CGPoint) {
         switch interaction {
         case .none:
             break
@@ -1623,16 +1737,15 @@ public final class CaptureCanvasView: NSView {
                     y: min(start.y, pt.y),
                     width: dx,
                     height: dy
-                ).intersection(bounds)
+                ).intersection(selectionLimit)
             }
 
         case .movingSelection(let startMouse, let initialRect):
-            let dx = pt.x - startMouse.x
-            let dy = pt.y - startMouse.y
-            var newRect = initialRect.offsetBy(dx: dx, dy: dy)
-            newRect.origin.x = max(0, min(newRect.origin.x, bounds.width - newRect.width))
-            newRect.origin.y = max(0, min(newRect.origin.y, bounds.height - newRect.height))
-            selectionRect = newRect
+            selectionRect = CapturePixelGeometry.moving(
+                initialRect,
+                by: CGPoint(x: pt.x - startMouse.x, y: pt.y - startMouse.y),
+                within: selectionLimit
+            )
 
         case .resizingSelection(let handle, let initialRect):
             selectionRect = resizedRect(from: initialRect, handle: handle, to: pt)
@@ -1675,6 +1788,7 @@ public final class CaptureCanvasView: NSView {
         let pt = convert(event.locationInWindow, from: nil)
         mouseLocationInView = pt
 
+        var didCreateSelection = false
         switch interaction {
         case .creatingSelection(let start):
             let dx = abs(pt.x - start.x)
@@ -1686,11 +1800,12 @@ public final class CaptureCanvasView: NSView {
                 } else {
                     hasLockedSelection = true
                     selectionRect = CGRect(x: max(0, pt.x - 180), y: max(0, pt.y - 120), width: 360, height: 240)
-                        .intersection(bounds)
+                        .intersection(selectionLimit)
                 }
             } else {
                 hasLockedSelection = true
             }
+            didCreateSelection = hasLockedSelection
 
         case .drawingAnnotation:
             if let active = activeAnnotation {
@@ -1704,8 +1819,12 @@ public final class CaptureCanvasView: NSView {
             break
         }
 
+        let shouldCopy = didCreateSelection && copyOnRelease
         interaction = .none
         needsDisplay = true
+        if shouldCopy {
+            triggerCopyAction()
+        }
     }
 
     override public func rightMouseDown(with event: NSEvent) {
@@ -1741,6 +1860,24 @@ public final class CaptureCanvasView: NSView {
         case 1 where flags.contains(.command): // Cmd + S -> Save File
             triggerSaveFileAction()
 
+        case 0 where flags.contains(.command): // Cmd + A -> Current screen
+            commitInlineTextIfNeeded()
+            interaction = .none
+            selectedAnnotationID = nil
+            hasLockedSelection = true
+            selectionRect = capturedImageRect
+            updateToolbarView()
+
+        case 33 where flags.intersection([.command, .option, .control]).isEmpty: // [ -> Replay history
+            replayHistory()
+
+        case 30 where flags.intersection([.command, .option, .control]).isEmpty: // ] -> Captured cursor
+            toggleCapturedCursor()
+
+        case 13, 0, 1, 2: // WASD -> Source pixel
+            guard flags.intersection([.command, .option, .control]).isEmpty else { return }
+            moveCursor(keyCode: event.keyCode)
+
         case 6 where flags.contains([.command, .shift]): // Cmd + Shift + Z -> Redo
             redoAnnotation()
 
@@ -1748,6 +1885,7 @@ public final class CaptureCanvasView: NSView {
             undoAnnotation()
 
         case 8 where !flags.contains(.command): // 'C' -> Copy pixel color under cursor!
+            guard cgImage != nil, capturedImageRect.contains(mouseLocationInView) else { return }
             let (r, g, b, _) = sampleRGB(at: mouseLocationInView)
             let code = colorFormat.format(r: r, g: g, b: b)
             NSPasteboard.general.clearContents()
@@ -1757,12 +1895,15 @@ public final class CaptureCanvasView: NSView {
         case 123, 124, 125, 126: // Left, Right, Down, Up -> 1px nudge (10px with Shift)
             guard hasLockedSelection else { return }
             let step: CGFloat = flags.contains(.shift) ? 10.0 : 1.0
-            var r = selectionRect
-            if event.keyCode == 123 { r.origin.x -= step }
-            if event.keyCode == 124 { r.origin.x += step }
-            if event.keyCode == 125 { r.origin.y -= step }
-            if event.keyCode == 126 { r.origin.y += step }
-            selectionRect = r.intersection(bounds)
+            let dx: CGFloat = event.keyCode == 123 ? -step : (event.keyCode == 124 ? step : 0)
+            let dy: CGFloat = event.keyCode == 125 ? -step : (event.keyCode == 126 ? step : 0)
+            let moved = CapturePixelGeometry.moving(
+                selectionRect, by: CGPoint(x: dx * pixelStep.width, y: dy * pixelStep.height), within: capturedImageRect
+            )
+            let delta = CGPoint(x: moved.minX - selectionRect.minX, y: moved.minY - selectionRect.minY)
+            annotations = annotations.map { $0.translated(by: delta) }
+            redoStack = redoStack.map { $0.translated(by: delta) }
+            selectionRect = moved
 
         default:
             break
@@ -1771,9 +1912,120 @@ public final class CaptureCanvasView: NSView {
 
     override public func flagsChanged(with event: NSEvent) {
         if event.keyCode == 56 || event.keyCode == 60 {
-            if event.modifierFlags.contains(.shift) {
+            if event.modifierFlags.contains(.shift),
+               event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
                 colorFormat = colorFormat.next()
                 needsDisplay = true
+            }
+        }
+    }
+
+    private func moveCursor(keyCode: UInt16) {
+        guard cgImage != nil else { return }
+        let dx: CGFloat = keyCode == 0 ? -pixelStep.width : (keyCode == 2 ? pixelStep.width : 0)
+        let dy: CGFloat = keyCode == 1 ? -pixelStep.height : (keyCode == 13 ? pixelStep.height : 0)
+        let point = CGPoint(
+            x: max(capturedImageRect.minX, min(capturedImageRect.maxX - pixelStep.width / 2, mouseLocationInView.x + dx)),
+            y: max(capturedImageRect.minY + pixelStep.height / 2, min(capturedImageRect.maxY, mouseLocationInView.y + dy))
+        )
+        mouseLocationInView = point
+        if !hasLockedSelection {
+            hoveredWindow = detectedWindows.first { $0.frameInScreen.contains(point) }
+        }
+        updateDrag(to: point)
+        let primaryHeight = NSScreen.screens.first?.frame.maxY ?? bounds.height
+        CGWarpMouseCursorPosition(CGPoint(x: screenOrigin.x + point.x, y: primaryHeight - screenOrigin.y - point.y))
+        CGAssociateMouseAndMouseCursorPosition(1)
+        needsDisplay = true
+    }
+
+    private func toggleCapturedCursor() {
+        guard liveCaptureState == nil else {
+            showToast(L10n.string("历史截图没有单独的鼠标指针"))
+            return
+        }
+        showsCapturedCursor.toggle()
+        needsDisplay = true
+        showToast(L10n.string(showsCapturedCursor ? "已显示截取的鼠标指针" : "已隐藏截取的鼠标指针"))
+    }
+
+    private func restoreLiveCapture() {
+        guard let live = liveCaptureState else {
+            showToast(L10n.string("已是最早的截图"))
+            return
+        }
+        liveCaptureState = nil
+        replayIndex = -1
+        capturedImageRect = bounds
+        setCapturedCGImage(live.image)
+        annotations = live.annotations
+        redoStack = live.redoStack
+        hasLockedSelection = live.locked
+        selectionRect = live.selection
+        currentTool = live.tool
+        nextCounterValue = live.counter
+        detectedWindows = live.windows
+        showsCapturedCursor = live.showsCursor
+        hoveredWindow = detectedWindows.first { $0.frameInScreen.contains(mouseLocationInView) }
+        interaction = .none
+        selectedAnnotationID = nil
+        updateToolbarView()
+        showToast(L10n.string("已返回当前截图"))
+    }
+
+    private func replayHistory() {
+        guard !isRecordingSubbarExpanded else { return }
+        commitInlineTextIfNeeded()
+        if liveCaptureState == nil {
+            guard let cgImage else { return }
+            replayRecords = screenshotHistory.records
+            guard !replayRecords.isEmpty else {
+                showToast(L10n.string("还没有截图记录"))
+                return
+            }
+            liveCaptureState = LiveCaptureState(
+                image: cgImage, selection: selectionRect, locked: hasLockedSelection,
+                annotations: annotations, redoStack: redoStack, tool: currentTool,
+                counter: nextCounterValue, windows: detectedWindows, showsCursor: showsCapturedCursor
+            )
+        }
+        let nextIndex = replayIndex + 1
+        if nextIndex >= replayRecords.count {
+            restoreLiveCapture()
+            return
+        }
+        let token = UUID()
+        replayLoadToken = token
+        replayIndex = nextIndex
+        let record = replayRecords[nextIndex]
+        let session = sessionID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let source = CGImageSourceCreateWithURL(record.fileURL as CFURL, nil)
+            let image = source.flatMap { CGImageSourceCreateImageAtIndex($0, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) }
+            DispatchQueue.main.async {
+                guard let self, self.sessionID == session, self.replayLoadToken == token else { return }
+                guard let image, image.width > 0, image.height > 0 else {
+                    self.showToast(L10n.string("无法读取这张图片。"))
+                    return
+                }
+                let scale = min(self.bounds.width / CGFloat(image.width), self.bounds.height / CGFloat(image.height))
+                let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
+                self.capturedImageRect = CGRect(x: self.bounds.midX - size.width / 2, y: self.bounds.midY - size.height / 2,
+                                                width: size.width, height: size.height)
+                self.setCapturedCGImage(image)
+                self.hasLockedSelection = true
+                self.selectionRect = self.capturedImageRect
+                self.annotations = []
+                self.redoStack = []
+                self.activeAnnotation = nil
+                self.selectedAnnotationID = nil
+                self.detectedWindows = []
+                self.hoveredWindow = nil
+                self.interaction = .none
+                self.currentTool = .selectMove
+                self.nextCounterValue = 1
+                self.updateToolbarView()
+                self.showToast(L10n.format("截图历史 %d / %d", nextIndex + 1, self.replayRecords.count))
             }
         }
     }
@@ -1794,6 +2046,7 @@ public final class CaptureCanvasView: NSView {
     }
 
     private func hitTestResizeHandle(at pt: CGPoint, in rect: CGRect) -> ResizeHandlePosition? {
+        guard AppSettings.shared.capturePreferences.showAnchors else { return nil }
         for handle in ResizeHandlePosition.allCases {
             let hPt = handlePoint(for: handle, in: rect)
             if hypot(pt.x - hPt.x, pt.y - hPt.y) <= 8.0 {
@@ -1832,7 +2085,7 @@ public final class CaptureCanvasView: NSView {
         let x2 = max(minX, maxX)
         let y1 = min(minY, maxY)
         let y2 = max(minY, maxY)
-        return CGRect(x: x1, y: y1, width: max(16, x2 - x1), height: max(16, y2 - y1)).intersection(bounds)
+        return CGRect(x: x1, y: y1, width: max(16, x2 - x1), height: max(16, y2 - y1)).intersection(selectionLimit)
     }
 
     // MARK: - Direct Inline Text Input on Canvas (Zero Modal Popup!)
@@ -1990,8 +2243,9 @@ public final class CaptureCanvasView: NSView {
         }
 
         guard let outputImage = PixelPreservingImageRenderer.capture(
-            base: baseCGImage, screenBounds: bounds, selection: targetRect,
+            base: baseCGImage, screenBounds: bounds, imageRect: capturedImageRect, selection: targetRect,
             drawAnnotations: { ctx in
+                drawCapturedCursor(in: ctx)
                 for item in annotations {
                     drawAnnotationItem(item, in: ctx)
                 }
@@ -2004,7 +2258,7 @@ public final class CaptureCanvasView: NSView {
             width: targetRect.width,
             height: targetRect.height
         )
-        ScreenshotHistoryStore.shared.saveInBackground(outputImage)
+        screenshotHistory.saveInBackground(outputImage)
         return (outputImage, screenRect)
     }
 
@@ -2042,6 +2296,7 @@ public final class CaptureCanvasView: NSView {
 
     public func triggerPinAction() {
         guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
+        autoSaveFinishedSnip(image)
         onFinish()
         PinManager.shared.pinImage(image, at: screenRect)
     }
@@ -2060,7 +2315,12 @@ public final class CaptureCanvasView: NSView {
                 let processed = try await VisionImageEffectsService.shared.apply(effect, to: image)
                 guard self.sessionID == sessionID else { return }
                 self.onFinish()
-                PinManager.shared.pinImage(processed, at: screenRect, startWithShadow: effect != .extractSubject)
+                self.autoSaveFinishedSnip(processed)
+                PinManager.shared.pinImage(
+                    processed,
+                    at: screenRect,
+                    startWithShadow: effect == .extractSubject ? false : nil
+                )
             } catch {
                 guard self.sessionID == sessionID else { return }
                 self.showToast((error as? VisionImageEffectsError)?.errorDescription ?? L10n.string("无法生成图片效果。"))
@@ -2113,6 +2373,7 @@ public final class CaptureCanvasView: NSView {
     public func triggerOCRTranslateAction() {
         guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
         onFinish()
+        autoSaveFinishedSnip(image)
         PinManager.shared.pinImage(
             image,
             at: screenRect,
@@ -2125,6 +2386,7 @@ public final class CaptureCanvasView: NSView {
     public func triggerOCRExtractAction() {
         guard let (image, screenRect) = renderCroppedAnnotatedImage() else { return }
         onFinish()
+        autoSaveFinishedSnip(image)
         PinManager.shared.pinImage(
             image,
             at: screenRect,
@@ -2137,10 +2399,12 @@ public final class CaptureCanvasView: NSView {
         guard let (image, _) = renderCroppedAnnotatedImage(),
               let imageSnapshot = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
 
+        autoSaveFinishedSnip(image)
         onFinish()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let defaultName = "SnapLex_\(formatter.string(from: Date())).png"
+        let defaultName = SnapPreferences.fileName(
+            pattern: AppSettings.shared.capturePreferences.fileNamePattern,
+            at: Date()
+        )
 
         let savePanel = NSSavePanel()
         savePanel.nameFieldStringValue = defaultName
@@ -2153,9 +2417,122 @@ public final class CaptureCanvasView: NSView {
 
     public func triggerCopyAction() {
         guard let (image, _) = renderCroppedAnnotatedImage() else { return }
+        autoSaveFinishedSnip(image)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([image])
         onFinish()
+    }
+
+    func copyNowOrArm() {
+        if hasLockedSelection || hoveredWindow != nil {
+            triggerCopyAction()
+        } else {
+            copyOnRelease = true
+        }
+    }
+
+    func quickSaveSelection() {
+        guard hasLockedSelection || hoveredWindow != nil,
+              let (image, _) = renderCroppedAnnotatedImage() else {
+            showToast(L10n.string("请先框选要保存的区域"))
+            return
+        }
+        let preferences = AppSettings.shared.capturePreferences
+        autoSaveFinishedSnip(image)
+        let notify = preferences.quickSaveNotification
+        let directory = preferences.quickSaveDirectoryURL()
+        let pattern = preferences.fileNamePattern
+        Task { @MainActor in
+            let url = await PNGImageWriter.export(image, to: directory, pattern: pattern)
+            guard notify else { return }
+            if let url {
+                self.showToast(L10n.format("已快速保存到 %@", url.lastPathComponent))
+            } else {
+                self.showToast(L10n.string("快速保存失败"))
+            }
+        }
+    }
+
+    private func autoSaveFinishedSnip(_ image: NSImage) {
+        let preferences = AppSettings.shared.capturePreferences
+        guard preferences.autoSaveEnabled else { return }
+        let directory = preferences.autoSaveDirectoryURL()
+        let pattern = preferences.fileNamePattern
+        Task { _ = await PNGImageWriter.export(image, to: directory, pattern: pattern) }
+    }
+
+    private func drawFullscreenCrossLines(at point: CGPoint, in ctx: CGContext) {
+        ctx.saveGState()
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.9).cgColor)
+        ctx.setLineWidth(1)
+        ctx.move(to: CGPoint(x: bounds.minX, y: point.y))
+        ctx.addLine(to: CGPoint(x: bounds.maxX, y: point.y))
+        ctx.move(to: CGPoint(x: point.x, y: bounds.minY))
+        ctx.addLine(to: CGPoint(x: point.x, y: bounds.maxY))
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
+    private func drawMagnifierSelectionDecorations(loupeRect: CGRect, requested: CGRect, cell: CGFloat, in ctx: CGContext) {
+        let preferences = AppSettings.shared.capturePreferences
+        guard preferences.magnifierShowsMask || preferences.magnifierShowsBorder || preferences.magnifierShowsAnchors else { return }
+        let active: CGRect? = hasLockedSelection ? selectionRect : hoveredWindow?.frameInScreen
+        guard let active, active.width > 1, active.height > 1 else { return }
+        let topLeft = loupePoint(for: CGPoint(x: active.minX, y: active.maxY), requested: requested, cell: cell, loupeRect: loupeRect)
+        let bottomRight = loupePoint(for: CGPoint(x: active.maxX, y: active.minY), requested: requested, cell: cell, loupeRect: loupeRect)
+        let magnified = CGRect(x: topLeft.x, y: bottomRight.y, width: bottomRight.x - topLeft.x, height: topLeft.y - bottomRight.y)
+
+        if preferences.magnifierShowsMask {
+            let path = CGMutablePath()
+            path.addRect(loupeRect)
+            path.addRect(magnified)
+            ctx.addPath(path)
+            ctx.setFillColor(NSColor(
+                srgbRed: preferences.maskRed,
+                green: preferences.maskGreen,
+                blue: preferences.maskBlue,
+                alpha: preferences.maskAlpha
+            ).cgColor)
+            ctx.drawPath(using: .eoFill)
+        }
+        if preferences.magnifierShowsBorder {
+            let scale = cell / max(pixelStep.width, 0.01)
+            ctx.setStrokeColor(NSColor.white.cgColor)
+            ctx.setLineWidth(max(1, CGFloat(preferences.borderWidth) * scale))
+            ctx.stroke(magnified)
+        }
+        if preferences.magnifierShowsAnchors, hasLockedSelection {
+            let radius = max(2, 4.5 * cell / max(pixelStep.width, 0.01))
+            let border = NSColor(
+                srgbRed: preferences.anchorBorderRed,
+                green: preferences.anchorBorderGreen,
+                blue: preferences.anchorBorderBlue,
+                alpha: preferences.anchorBorderAlpha
+            )
+            for handle in ResizeHandlePosition.allCases {
+                let point = loupePoint(
+                    for: handlePoint(for: handle, in: active),
+                    requested: requested, cell: cell, loupeRect: loupeRect
+                )
+                let handleRect = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
+                ctx.setFillColor(NSColor.white.cgColor)
+                ctx.fillEllipse(in: handleRect)
+                ctx.setStrokeColor(border.cgColor)
+                ctx.setLineWidth(max(1, radius / 4))
+                ctx.strokeEllipse(in: handleRect)
+            }
+        }
+    }
+
+    private func loupePoint(for viewPoint: CGPoint, requested: CGRect, cell: CGFloat, loupeRect: CGRect) -> CGPoint {
+        let imageRect = capturedImageRect
+        let imageSize = sourceImageSize
+        let sourceX = (viewPoint.x - imageRect.minX) * imageSize.width / max(imageRect.width, 0.01)
+        let sourceY = (imageRect.maxY - viewPoint.y) * imageSize.height / max(imageRect.height, 0.01)
+        return CGPoint(
+            x: loupeRect.minX + (sourceX - requested.minX) * cell,
+            y: loupeRect.maxY - (sourceY - requested.minY) * cell
+        )
     }
 }
 

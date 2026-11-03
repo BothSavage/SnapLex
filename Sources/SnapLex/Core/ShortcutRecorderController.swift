@@ -49,6 +49,14 @@ public final class ShortcutRecorderController: ObservableObject {
             cancelCapture()
             return
         }
+        if shortcut.isGlobal, event.keyCode == 51 || event.keyCode == 117 {
+            AppSettings.shared.setShortcutBinding(
+                ShortcutBinding(keyCode: 0, modifiers: 0, keyLabel: ""),
+                for: shortcut
+            )
+            cancelCapture()
+            return
+        }
 
         let modifiers = event.modifierFlags
             .intersection(.deviceIndependentFlagsMask)

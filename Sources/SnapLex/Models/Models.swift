@@ -53,7 +53,10 @@ public struct ShortcutBinding: Codable, Equatable {
         self.keyLabel = keyLabel
     }
 
+    public var isUnbound: Bool { keyLabel.isEmpty }
+
     public var displayString: String {
+        if isUnbound { return "" }
         let flags = NSEvent.ModifierFlags(rawValue: modifiers)
         var result = ""
         if flags.contains(.control) { result += "⌃" }
@@ -66,6 +69,7 @@ public struct ShortcutBinding: Codable, Equatable {
     /// Global shortcuts must not consume normal typing, cursor movement or the
     /// standard editing commands used by the app's own selection-copy fallback.
     public var isReservedForTextEditing: Bool {
+        if isUnbound { return false }
         let flags = NSEvent.ModifierFlags(rawValue: modifiers)
             .intersection([.command, .option, .control, .shift])
         let nonTextKeyCodes: Set<UInt16> = [
@@ -109,6 +113,10 @@ public enum GlobalShortcut: String, CaseIterable, Identifiable {
     case unlockClickThrough
     case screenRecorder
     case stopRecording
+    case screenshotCopy
+    case togglePins
+    case toggleClickThrough
+    case quickSave
     case openSettings
     case quitApp
 
@@ -124,6 +132,10 @@ public enum GlobalShortcut: String, CaseIterable, Identifiable {
         case .unlockClickThrough: return "解锁所有桌面贴图"
         case .screenRecorder: return "屏幕录制 (区域 / 窗口 / 全屏导出 MP4 · GIF)"
         case .stopRecording: return "停止录屏"
+        case .screenshotCopy: return "截图并复制"
+        case .togglePins: return "显示或隐藏全部贴图"
+        case .toggleClickThrough: return "切换贴图鼠标穿透"
+        case .quickSave: return "快速保存"
         case .openSettings: return "打开偏好设置"
         case .quitApp: return "隐藏主页面"
         }
@@ -141,6 +153,10 @@ public enum GlobalShortcut: String, CaseIterable, Identifiable {
         case .unlockClickThrough: return 8
         case .screenRecorder: return 9
         case .stopRecording: return 10
+        case .screenshotCopy: return 11
+        case .togglePins: return 12
+        case .toggleClickThrough: return 13
+        case .quickSave: return 14
         case .openSettings, .quitApp: return nil
         }
     }
@@ -160,6 +176,10 @@ public enum GlobalShortcut: String, CaseIterable, Identifiable {
         case .unlockClickThrough: return .init(keyCode: 7, modifiers: controlCommand, keyLabel: "X")
         case .screenRecorder: return .init(keyCode: 15, modifiers: controlCommand, keyLabel: "R")
         case .stopRecording: return .init(keyCode: 109, modifiers: 0, keyLabel: "F10")
+        case .screenshotCopy: return .init(keyCode: 122, modifiers: command, keyLabel: "F1")
+        case .togglePins: return .init(keyCode: 99, modifiers: NSEvent.ModifierFlags.option.rawValue, keyLabel: "F3")
+        case .toggleClickThrough: return .init(keyCode: 0, modifiers: 0, keyLabel: "")
+        case .quickSave: return .init(keyCode: 1, modifiers: command | shift, keyLabel: "S")
         case .openSettings: return .init(keyCode: 43, modifiers: command, keyLabel: ",")
         case .quitApp: return .init(keyCode: 12, modifiers: command, keyLabel: "Q")
         }
@@ -214,6 +234,18 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(recordScreenshotTranslations, forKey: "SnapLex.recordScreenshotTranslations") }
     }
     @Published private var storedScreenshotHistoryLimit: Int
+    @Published public var capturePreferences: SnapPreferences {
+        didSet {
+            let sanitized = capturePreferences.sanitized()
+            if sanitized != capturePreferences {
+                capturePreferences = sanitized
+                return
+            }
+            if let encoded = try? JSONEncoder().encode(capturePreferences) {
+                defaults.set(encoded, forKey: "SnapLex.capturePreferences")
+            }
+        }
+    }
     public var screenshotHistoryLimit: Int {
         get { storedScreenshotHistoryLimit }
         set {
@@ -263,7 +295,9 @@ public final class AppSettings: ObservableObject {
             let merged = defaultBindings.merging(saved) { _, saved in saved }
             var repaired = merged
             for shortcut in GlobalShortcut.allCases where shortcut.isGlobal {
-                if repaired[shortcut.rawValue]?.isReservedForTextEditing == true {
+                if let binding = repaired[shortcut.rawValue],
+                   !binding.isUnbound,
+                   binding.isReservedForTextEditing {
                     repaired[shortcut.rawValue] = shortcut.defaultBinding
                 }
             }
@@ -283,6 +317,7 @@ public final class AppSettings: ObservableObject {
         self.storedScreenshotHistoryLimit = defaults.object(forKey: "SnapLex.screenshotHistoryLimit") == nil
             ? 100
             : min(1000, max(1, defaults.integer(forKey: "SnapLex.screenshotHistoryLimit")))
+        self.capturePreferences = SnapPreferences.stored(in: defaults)
     }
 
     public func shortcutBinding(for shortcut: GlobalShortcut) -> ShortcutBinding {
@@ -290,7 +325,7 @@ public final class AppSettings: ObservableObject {
     }
 
     public func setShortcutBinding(_ binding: ShortcutBinding, for shortcut: GlobalShortcut) {
-        guard !shortcut.isGlobal || !binding.isReservedForTextEditing else { return }
+        if shortcut.isGlobal, !binding.isUnbound, binding.isReservedForTextEditing { return }
         shortcutBindings[shortcut.rawValue] = binding
         SelectionAndHotKeyManager.shared.refreshHotKeys()
     }

@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -26,5 +27,16 @@ enum PNGImageWriter {
                 continuation.resume(returning: saved)
             }
         }
+    }
+
+    /// Writes a uniquely named PNG into a folder, creating the folder when needed.
+    @MainActor
+    static func export(_ image: NSImage, to directory: URL, pattern: String) async -> URL? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var naming = SnapPreferences.standard
+        naming.fileNamePattern = pattern
+        let url = naming.uniqueFileURL(in: directory, at: Date())
+        return await write(cgImage, to: url) ? url : nil
     }
 }

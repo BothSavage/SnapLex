@@ -210,7 +210,10 @@ public final class GitHubReleaseUpdateService: ObservableObject {
     }
 
     public func checkForUpdatesIfNeeded() async {
-        if let lastSuccessfulCheck, Date().timeIntervalSince(lastSuccessfulCheck) < 60 { return }
+        let preferences = AppSettings.shared.capturePreferences
+        guard preferences.periodicUpdatesEnabled else { return }
+        let interval = TimeInterval(preferences.updateIntervalHours) * 3600
+        if let lastSuccessfulCheck, Date().timeIntervalSince(lastSuccessfulCheck) < interval { return }
         await checkForUpdates()
     }
 

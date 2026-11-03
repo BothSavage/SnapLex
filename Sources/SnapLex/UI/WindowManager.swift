@@ -372,7 +372,11 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    public func triggerScreenshotFlow() {
+    public func triggerScreenshotFlow(copyOnRelease: Bool = false) {
+        if copyOnRelease, CaptureManager.shared.isCapturing {
+            CaptureManager.shared.startCapture(copyOnRelease: true)
+            return
+        }
         hidePillBar()
         if !TranslatorViewModel.shared.isPinned {
             cardPanel?.orderOut(nil)
@@ -386,10 +390,10 @@ public final class WindowManager: NSObject, NSWindowDelegate {
 
         if dismissDashboardFirst {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                CaptureManager.shared.startCapture()
+                CaptureManager.shared.startCapture(copyOnRelease: copyOnRelease)
             }
         } else {
-            CaptureManager.shared.startCapture()
+            CaptureManager.shared.startCapture(copyOnRelease: copyOnRelease)
         }
     }
 

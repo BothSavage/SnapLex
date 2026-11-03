@@ -277,8 +277,50 @@ public struct SettingsView: View {
 
                     if section == .all || section == .preferences {
                         VStack(alignment: .leading, spacing: 10) {
+                            CapturePreferencesSection(settings: settings)
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
                             SectionHeaderLabel(title: L10n.string("软件更新"))
                             VStack(alignment: .leading, spacing: 10) {
+                                MonochromeToggleRow(
+                                    title: L10n.string("启动时检查更新"),
+                                    subtitle: L10n.string("启动后等待一段时间再连接 GitHub"),
+                                    isOn: startupUpdateBinding
+                                )
+                                if settings.capturePreferences.checkUpdatesOnStartup {
+                                    SettingsChoiceRow(title: L10n.string("启动后延迟"), subtitle: L10n.string("秒")) {
+                                        Stepper(value: updateDelayBinding, in: 0...3600, step: 5) {
+                                            Text("\(settings.capturePreferences.updateDelaySeconds)")
+                                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                                .frame(minWidth: 42, alignment: .trailing)
+                                        }
+                                        .fixedSize()
+                                    }
+                                }
+                                MonochromeToggleRow(
+                                    title: L10n.string("定期检查更新"),
+                                    subtitle: L10n.string("打开设置时，距离上次成功检查超过该间隔才再次检查"),
+                                    isOn: periodicUpdateBinding
+                                )
+                                if settings.capturePreferences.periodicUpdatesEnabled {
+                                    SettingsChoiceRow(title: L10n.string("检查间隔"), subtitle: L10n.string("小时")) {
+                                        Stepper(value: updateIntervalBinding, in: 1...720, step: 1) {
+                                            Text("\(settings.capturePreferences.updateIntervalHours)")
+                                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                                .frame(minWidth: 42, alignment: .trailing)
+                                        }
+                                        .fixedSize()
+                                    }
+                                }
+                                HStack {
+                                    Spacer()
+                                    Button(L10n.string("恢复更新默认")) { restoreUpdateDefaults() }
+                                        .buttonStyle(.plain)
+                                        .font(.system(size: 11.5, weight: .medium))
+                                }
+                                .padding(.horizontal, 14)
+                                DividerLine()
                                 HStack(alignment: .center, spacing: 12) {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(L10n.format("当前版本 %@", releaseUpdateChecker.currentVersion))
@@ -344,6 +386,54 @@ public struct SettingsView: View {
                 Task { await releaseUpdateChecker.checkForUpdatesIfNeeded() }
             }
         }
+    }
+
+    private var startupUpdateBinding: Binding<Bool> {
+        captureBool(\.checkUpdatesOnStartup)
+    }
+
+    private var periodicUpdateBinding: Binding<Bool> {
+        captureBool(\.periodicUpdatesEnabled)
+    }
+
+    private var updateDelayBinding: Binding<Int> {
+        captureInt(\.updateDelaySeconds)
+    }
+
+    private var updateIntervalBinding: Binding<Int> {
+        captureInt(\.updateIntervalHours)
+    }
+
+    private func captureBool(_ keyPath: WritableKeyPath<SnapPreferences, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { settings.capturePreferences[keyPath: keyPath] },
+            set: { value in
+                var preferences = settings.capturePreferences
+                preferences[keyPath: keyPath] = value
+                settings.capturePreferences = preferences
+            }
+        )
+    }
+
+    private func captureInt(_ keyPath: WritableKeyPath<SnapPreferences, Int>) -> Binding<Int> {
+        Binding(
+            get: { settings.capturePreferences[keyPath: keyPath] },
+            set: { value in
+                var preferences = settings.capturePreferences
+                preferences[keyPath: keyPath] = value
+                settings.capturePreferences = preferences
+            }
+        )
+    }
+
+    private func restoreUpdateDefaults() {
+        var preferences = settings.capturePreferences
+        let standard = SnapPreferences.standard
+        preferences.checkUpdatesOnStartup = standard.checkUpdatesOnStartup
+        preferences.updateDelaySeconds = standard.updateDelaySeconds
+        preferences.updateIntervalHours = standard.updateIntervalHours
+        preferences.periodicUpdatesEnabled = standard.periodicUpdatesEnabled
+        settings.capturePreferences = preferences
     }
 
     @ViewBuilder
@@ -510,7 +600,7 @@ private struct ReleaseNotesSummary: View {
     }
 }
 
-private struct SettingsChoiceRow<Control: View>: View {
+struct SettingsChoiceRow<Control: View>: View {
     let title: String
     var subtitle: String? = nil
     @ViewBuilder let control: () -> Control
@@ -589,7 +679,7 @@ private struct SettingsPinButton: View {
     }
 }
 
-private struct SectionHeaderLabel: View {
+struct SectionHeaderLabel: View {
     let title: String
     @Environment(\.colorScheme) private var colorScheme
 
@@ -602,7 +692,7 @@ private struct SectionHeaderLabel: View {
     }
 }
 
-private struct DividerLine: View {
+struct DividerLine: View {
     var body: some View {
         Rectangle()
             .fill(Color.primary.opacity(0.085))
@@ -611,7 +701,7 @@ private struct DividerLine: View {
     }
 }
 
-private struct MonochromeToggleRow: View {
+struct MonochromeToggleRow: View {
     let title: String
     let subtitle: String
     @Binding var isOn: Bool
@@ -695,7 +785,7 @@ private struct ShortcutRecorderRow: View {
             } label: {
                 Text(recorder.activeShortcut == shortcut
                     ? L10n.string("按下新快捷键…")
-                    : settings.shortcutBinding(for: shortcut).displayString)
+                    : shortcutLabel)
                     .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(Color.primary.opacity(0.88))
                     .padding(.horizontal, 9)
@@ -712,10 +802,27 @@ private struct ShortcutRecorderRow: View {
                     )
             }
             .buttonStyle(.plain)
-            .help(L10n.string("点击后按下新的快捷键；按 Esc 取消"))
+            .help(L10n.string("点击后按下新的快捷键；按 Esc 取消，按 Delete 清除"))
+            if shortcut.isGlobal, recorder.activeShortcut != shortcut, !settings.shortcutBinding(for: shortcut).isUnbound {
+                Button {
+                    settings.setShortcutBinding(ShortcutBinding(keyCode: 0, modifiers: 0, keyLabel: ""), for: shortcut)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.plain)
+                .help(L10n.string("清除快捷键"))
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
+    }
+
+    private var shortcutLabel: String {
+        let binding = settings.shortcutBinding(for: shortcut)
+        return binding.isUnbound ? L10n.string("未设置") : binding.displayString
     }
 }
 
