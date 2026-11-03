@@ -372,7 +372,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    public func triggerScreenshotFlow(copyOnRelease: Bool = false) {
+    public func triggerScreenshotFlow(copyOnRelease: Bool = false, hideDashboard: Bool = true) {
         if copyOnRelease, CaptureManager.shared.isCapturing {
             CaptureManager.shared.startCapture(copyOnRelease: true)
             return
@@ -385,8 +385,10 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         // The dashboard is a normal app window, so the capture overlay would
         // otherwise freeze it as part of the screenshot. Let WindowServer commit
         // the hide before taking the desktop snapshot.
-        let dismissDashboardFirst = dashboardWindow?.isVisible == true
-        dashboardWindow?.orderOut(nil)
+        let dismissDashboardFirst = hideDashboard && dashboardWindow?.isVisible == true
+        if dismissDashboardFirst {
+            dashboardWindow?.orderOut(nil)
+        }
 
         if dismissDashboardFirst {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {

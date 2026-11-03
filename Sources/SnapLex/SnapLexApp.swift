@@ -334,7 +334,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         mgr.onTriggerScreenshot = {
-            WindowManager.shared.triggerScreenshotFlow()
+            WindowManager.shared.triggerScreenshotFlow(hideDashboard: false)
         }
 
         mgr.onTriggerPinToScreen = {
@@ -362,7 +362,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         mgr.onTriggerScreenshotCopy = {
-            WindowManager.shared.triggerScreenshotFlow(copyOnRelease: true)
+            WindowManager.shared.triggerScreenshotFlow(copyOnRelease: true, hideDashboard: false)
         }
         mgr.onTriggerTogglePins = {
             PinManager.shared.toggleHideAllPins()

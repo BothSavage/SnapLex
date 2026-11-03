@@ -148,7 +148,8 @@ public final class CaptureManager: NSObject {
         activeScreenFrame = screenFrame
 
         // 1. Enumerate visible windows (~0.5ms in memory)
-        let detectedWindows = Self.detectVisibleWindows(for: screen)
+        let overlayWindowID = reusableWindow.map { CGWindowID(max(0, $0.windowNumber)) }
+        let detectedWindows = Self.detectVisibleWindows(for: screen, excluding: overlayWindowID)
 
         // 2. Reuse pre-warmed window (0ms allocation!)
         let window: CaptureOverlayWindow
@@ -232,19 +233,18 @@ public final class CaptureManager: NSObject {
 
     // MARK: - Window Detection (CGWindowListCopyWindowInfo)
 
-    private static func detectVisibleWindows(for screen: NSScreen) -> [DetectedWindowInfo] {
+    private static func detectVisibleWindows(for screen: NSScreen, excluding overlayWindowID: CGWindowID?) -> [DetectedWindowInfo] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let infoList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
 
         let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        let myPID = ProcessInfo.processInfo.processIdentifier
         var results: [DetectedWindowInfo] = []
 
         for info in infoList {
-            guard let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
-                  ownerPID != myPID else { continue }
+            if let windowID = info[kCGWindowNumber as String] as? CGWindowID,
+               windowID == overlayWindowID { continue }
 
             let layer = info[kCGWindowLayer as String] as? Int ?? 0
             guard layer == 0 else { continue }
